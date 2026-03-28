@@ -5,22 +5,17 @@ import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import com.anthropic.core.JsonString;
 import com.anthropic.core.JsonValue;
 import com.anthropic.models.messages.*;
-import com.djh.learnclaudecode.util.BashUtil;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Paths;
 import java.util.*;
 
 public class S02_agent_tool_use {
-    private static final String SYSTEM_PROMPT = String.format("You are a coding agent at %s. Use tools to solve tasks. Act, don't explain.", System.getProperty("user.dir"));
+    private static final String SYSTEM_PROMPT = String.format(
+            "You are a coding agent at %s. Use tools to solve tasks. Act, don't explain.",
+            System.getProperty("user.dir")
+    );
 
     private static final AnthropicClient client = AnthropicOkHttpClient.fromEnv();
 
@@ -32,49 +27,20 @@ public class S02_agent_tool_use {
 
     private static final Map<String, String> toolMap = new HashMap<>();
 
-    private static Map<String, Method> METHOD_MAP = new HashMap<>();
+    private static final Map<String, Method> METHOD_MAP = new HashMap<>();
 
     static {
-        TOOLS.add(ToolUnion.ofTool(buildBashTool()));
-        TOOLS.add(ToolUnion.ofTool(buildReadTool()));
+        Tool bashTool = buildBashTool();
+        Tool readTool = buildReadTool();
+
+        TOOLS.add(ToolUnion.ofTool(bashTool));
+        TOOLS.add(ToolUnion.ofTool(readTool));
 
         toolMap.put("bash", "runBash");
         toolMap.put("read_file", "runRead");
-//        toolMap.put("write_file", "runWrite");
-//        toolMap.put("edit_file", "runEdit");
 
-        TOOLS_DEFINE_MAP.put("bash", ToolUnion.ofTool(buildBashTool()));
-        TOOLS_DEFINE_MAP.put("read_file", ToolUnion.ofTool(buildReadTool()));
-
-    }
-
-    static class MessageInfo {
-        private String msg;
-
-        private String role;
-
-        public String getMsg() {
-            return msg;
-        }
-
-        public void setMsg(String msg) {
-            this.msg = msg;
-        }
-
-        public String getRole() {
-            return role;
-        }
-
-        public void setRole(String role) {
-            this.role = role;
-        }
-
-        public static MessageInfo build(String msg, String role) {
-            MessageInfo messageInfo = new MessageInfo();
-            messageInfo.setMsg(msg);
-            messageInfo.setRole(role);
-            return messageInfo;
-        }
+        TOOLS_DEFINE_MAP.put("bash", ToolUnion.ofTool(bashTool));
+        TOOLS_DEFINE_MAP.put("read_file", ToolUnion.ofTool(readTool));
     }
 
     public static void main(String[] args) {
@@ -85,26 +51,29 @@ public class S02_agent_tool_use {
                 METHOD_MAP.put(method.getName(), method);
             }
         } catch (Exception e) {
-            throw new RuntimeException("get method error");
+            throw new RuntimeException("get method error", e);
         }
 
         Scanner scanner = new Scanner(System.in);
-        List<MessageInfo> history = new ArrayList<>();
+        List<MessageParam> history = new ArrayList<>();
 
         while (true) {
-            String s = scanner.next();
-            history.add(MessageInfo.build(s, "user"));
-            if (s.strip().toLowerCase(Locale.ROOT).equals("q")) {
+            String input = scanner.nextLine();
+            if (input.strip().toLowerCase(Locale.ROOT).equals("q")) {
                 break;
             }
+
+            history.add(MessageParam.builder()
+                    .role(MessageParam.Role.USER)
+                    .content(input)
+                    .build());
             AgentLoop(history);
-            System.out.println(history.get(history.size() - 1).getMsg());
+            printAssistantText(history.get(history.size() - 1));
         }
         scanner.close();
-
     }
 
-    public static void AgentLoop(List<MessageInfo> history) {
+    public static void AgentLoop(List<MessageParam> history) {
         while (true) {
             MessageCreateParams.Builder builder = MessageCreateParams.builder()
                     .system(SYSTEM_PROMPT)
@@ -112,61 +81,101 @@ public class S02_agent_tool_use {
                     .maxTokens(8000L)
                     .tools(TOOLS)
                     .model(modelName);
-            for (int i = 0; i < history.size(); i++) {
-                if (history.get(i).getRole().equals("user")) {
-                    builder.addUserMessage(history.get(i).getMsg());
-                } else if (history.get(i).getRole().equals("assistant")) {
-                    builder.addAssistantMessage(history.get(i).getMsg());
-                }
+
+            for (MessageParam messageParam : history) {
+                builder.addMessage(messageParam);
             }
-            MessageCreateParams params = builder.build();
-            Message response = client.messages().create(params);
-            if (!response.stopReason().get().asString().equals("tool_use")) {
-                // KnownValue
-                history.add(MessageInfo.build(response.content().get(0).text().get().text(), "assistant"));
+
+            Message response = client.messages().create(builder.build());
+            history.add(response.toParam());
+
+            if (!response.stopReason().isPresent()
+                    || !"tool_use".equals(response.stopReason().get().asString())) {
                 break;
             }
-            for (ContentBlock content : response.content()) {
-                if (content.toolUse().isPresent()) {
-                    String toolName = content.toolUse().get().name();
-                    if (!toolMap.containsKey(toolName) || !TOOLS_DEFINE_MAP.containsKey(toolName)) {
-                        // 理论上不会出现进入到这个if的场景
-                        System.out.println("tool is not register");
-                        break;
-                    }
-                    String tool = toolMap.get(toolName);
-                    ToolUnion toolUnion = TOOLS_DEFINE_MAP.get(toolName);
-                    Object result = null;
-                    try {
-                        Method method = METHOD_MAP.get(tool);
-                        Parameter[] parameters = method.getParameters();
-                        Object[] methodParams = new Object[parameters.length];
-                        Tool.InputSchema.Properties properties = toolUnion.tool().get().inputSchema().properties().get();
-                        Map<String, JsonValue> stringJsonValueMap = properties._additionalProperties();
-                        Map objMap = (Map) content.toolUse().get()._input().asObject().get();
-                        for (Map.Entry<String, JsonValue> entry : stringJsonValueMap.entrySet()) {
-                            String paramName = entry.getKey();
-                            JsonString json = (JsonString) objMap.get(paramName);
-                            String paramValue = (String) json.asString().get();
-                            // TODO: 将参数名和参数值对应
-                            for (int i = 0; i < parameters.length; i++) {
-                                if (paramName.equals(parameters[i].getName())) {
-                                    methodParams[i] = paramValue;
-                                    break;
-                                }
-                            }
-                        }
-                        // 定义的全部都是public static方法
-                        result = method.invoke(null, methodParams);
-                        System.out.println(result.toString());
-                        history.add(MessageInfo.build(String.format("{'type': 'tool_result', 'tool_use_id': '%s', 'content': '%s'}",
-                                content.toolUse().get()._id().asString().get(), result.toString()), "user"));
 
-                    } catch (Exception e) {
-                        history.add(MessageInfo.build("call tool error", "assistant"));
-                    }
+            for (ContentBlock content : response.content()) {
+                if (content.toolUse().isEmpty()) {
+                    continue;
+                }
+
+                ToolUseBlock toolUse = content.toolUse().get();
+                String toolName = toolUse.name();
+                if (!toolMap.containsKey(toolName) || !TOOLS_DEFINE_MAP.containsKey(toolName)) {
+                    history.add(buildToolResult(toolUse, "tool is not register", true));
+                    continue;
+                }
+
+                try {
+                    Object result = invokeTool(toolName, toolUse);
+                    history.add(buildToolResult(toolUse, result == null ? "" : result.toString(), false));
+                } catch (Exception e) {
+                    history.add(buildToolResult(toolUse, "call tool error: " + e.getMessage(), true));
                 }
             }
+        }
+    }
+
+    private static Object invokeTool(String toolName, ToolUseBlock toolUse)
+            throws InvocationTargetException, IllegalAccessException {
+        String methodName = toolMap.get(toolName);
+        ToolUnion toolUnion = TOOLS_DEFINE_MAP.get(toolName);
+        Method method = METHOD_MAP.get(methodName);
+        if (method == null) {
+            throw new IllegalStateException("method not found: " + methodName);
+        }
+
+        Parameter[] parameters = method.getParameters();
+        Object[] methodParams = new Object[parameters.length];
+        Tool.InputSchema.Properties properties = toolUnion.tool().get().inputSchema().properties().get();
+        Map<String, JsonValue> definedProperties = properties._additionalProperties();
+        Map<?, ?> inputMap = (Map<?, ?>) toolUse._input().asObject().get();
+
+        for (Map.Entry<String, JsonValue> entry : definedProperties.entrySet()) {
+            String paramName = entry.getKey();
+            Object rawValue = inputMap.get(paramName);
+            if (!(rawValue instanceof JsonString jsonString)) {
+                continue;
+            }
+
+            String paramValue = (String) jsonString.asString().orElse("");
+            for (int i = 0; i < parameters.length; i++) {
+                if (paramName.equals(parameters[i].getName())) {
+                    methodParams[i] = paramValue;
+                    break;
+                }
+            }
+        }
+        return method.invoke(null, methodParams);
+    }
+
+    private static MessageParam buildToolResult(ToolUseBlock toolUse, String result, boolean isError) {
+        return MessageParam.builder()
+                .role(MessageParam.Role.USER)
+                .contentOfBlockParams(List.of(
+                        ContentBlockParam.ofToolResult(
+                                ToolResultBlockParam.builder()
+                                        .toolUseId(toolUse.id())
+                                        .content(result)
+                                        .isError(isError)
+                                        .build()
+                        )
+                ))
+                .build();
+    }
+
+    private static void printAssistantText(MessageParam messageParam) {
+        String role = messageParam._role().asString().get();
+        if (!role.equalsIgnoreCase(MessageParam.Role.Value.ASSISTANT.name())) {
+            return;
+        }
+
+        if (!messageParam.content().isBlockParams()) {
+            System.out.println(messageParam.content().asString());
+            return;
+        }
+        for (ContentBlockParam content : messageParam.content().asBlockParams()) {
+            content.text().ifPresent(textBlockParam -> System.out.println(textBlockParam.text()));
         }
     }
 
@@ -193,5 +202,4 @@ public class S02_agent_tool_use {
         inputSchemaBuild.type(JsonValue.from("object"));
         return Tool.builder().inputSchema(inputSchemaBuild.build()).name("read_file").description("Read file contents.").build();
     }
-
 }
