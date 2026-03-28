@@ -15,7 +15,7 @@ import java.util.function.Function;
 
 public class S01_agent_loop {
 
-    private static final String systemPrompt = "";
+    private static final String SYSTEM_PROMPT = String.format("You are a coding agent at %s. Use tools to solve tasks. Act, don't explain.", System.getProperty("user.dir"));
 
     private static final AnthropicClient client = AnthropicOkHttpClient.fromEnv();
 
@@ -80,6 +80,7 @@ public class S01_agent_loop {
     public static void AgentLoop(List<MessageInfo> history) {
         while (true) {
             MessageCreateParams.Builder builder = MessageCreateParams.builder()
+                    .system(SYSTEM_PROMPT)
                     .maxTokens(8000L)
                     .addTool(bashTool)
                     .model(modelName);
