@@ -32,15 +32,23 @@ public class S02_agent_tool_use {
     static {
         Tool bashTool = buildBashTool();
         Tool readTool = buildReadTool();
+        Tool writeTool = buildWriteTool();
+        Tool editTool = buildEditTool();
 
         TOOLS.add(ToolUnion.ofTool(bashTool));
         TOOLS.add(ToolUnion.ofTool(readTool));
+        TOOLS.add(ToolUnion.ofTool(writeTool));
+        TOOLS.add(ToolUnion.ofTool(editTool));
 
         toolMap.put("bash", "runBash");
         toolMap.put("read_file", "runRead");
+        toolMap.put("write_file", "runWrite");
+        toolMap.put("edit_file", "runEdit");
 
         TOOLS_DEFINE_MAP.put("bash", ToolUnion.ofTool(bashTool));
         TOOLS_DEFINE_MAP.put("read_file", ToolUnion.ofTool(readTool));
+        TOOLS_DEFINE_MAP.put("write_file", ToolUnion.ofTool(writeTool));
+        TOOLS_DEFINE_MAP.put("edit_file", ToolUnion.ofTool(editTool));
     }
 
     public static void main(String[] args) {
@@ -201,5 +209,32 @@ public class S02_agent_tool_use {
 
         inputSchemaBuild.type(JsonValue.from("object"));
         return Tool.builder().inputSchema(inputSchemaBuild.build()).name("read_file").description("Read file contents.").build();
+    }
+
+    public static Tool buildWriteTool() {
+        Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
+        inputSchemaBuild.required(List.of("path", "content"));
+        Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties((new HashMap<>() {{
+            put("path", JsonValue.from("string"));
+            put("content", JsonValue.from("string"));
+        }})).build();
+        inputSchemaBuild.properties(properties);
+
+        inputSchemaBuild.type(JsonValue.from("object"));
+        return Tool.builder().inputSchema(inputSchemaBuild.build()).name("write_file").description("Write content to file.").build();
+    }
+
+    public static Tool buildEditTool() {
+        Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
+        inputSchemaBuild.required(List.of("path", "oldText", "newText"));
+        Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties((new HashMap<>() {{
+            put("path", JsonValue.from("string"));
+            put("oldText", JsonValue.from("string"));
+            put("newText", JsonValue.from("string"));
+        }})).build();
+        inputSchemaBuild.properties(properties);
+
+        inputSchemaBuild.type(JsonValue.from("object"));
+        return Tool.builder().inputSchema(inputSchemaBuild.build()).name("edit_file").description("Replace exact text in file.").build();
     }
 }

@@ -39,9 +39,7 @@ public class ToolUtil {
     }
 
     public static String runWrite(String path, String content) {
-        try {
-            Files.createFile(Paths.get(path));
-            FileOutputStream fileOutputStream = new FileOutputStream(new File(path));
+        try(FileOutputStream fileOutputStream = new FileOutputStream(new File(path))) {
             fileOutputStream.write(content.getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
             throw new RuntimeException(e);
