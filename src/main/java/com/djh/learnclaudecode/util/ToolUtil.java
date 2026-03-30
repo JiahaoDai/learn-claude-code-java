@@ -1,5 +1,8 @@
 package com.djh.learnclaudecode.util;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -7,6 +10,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.List;
 
 public class ToolUtil {
 
@@ -59,6 +63,17 @@ public class ToolUtil {
         runWrite(path, newContent);
         return String.format("%s is replaced to %s", oldText, newText);
 
+    }
+
+    public static void runTodo(String json){
+        ObjectMapper objectMapper = new ObjectMapper();
+        List<TodoManager.Item> items = null;
+        try {
+            items = objectMapper.readValue(json, List.class);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException(e);
+        }
+        TodoManager.update(items);
     }
 
 }
