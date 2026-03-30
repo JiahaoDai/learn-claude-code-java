@@ -1,6 +1,7 @@
 package com.djh.learnclaudecode.util;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.File;
@@ -65,15 +66,15 @@ public class ToolUtil {
 
     }
 
-    public static void runTodo(String json){
+    public static String runTodo(String items){
+        System.out.println(items);
         ObjectMapper objectMapper = new ObjectMapper();
-        List<TodoManager.Item> items = null;
         try {
-            items = objectMapper.readValue(json, List.class);
+            List<TodoManager.Item> todoItems = objectMapper.readValue(items, new TypeReference<List<TodoManager.Item>>() {});
+            return TodoManager.update(todoItems);
         } catch (JsonProcessingException e) {
             throw new RuntimeException(e);
         }
-        TodoManager.update(items);
     }
 
 }

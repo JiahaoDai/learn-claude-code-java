@@ -5,6 +5,8 @@ import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import com.anthropic.core.JsonString;
 import com.anthropic.core.JsonValue;
 import com.anthropic.models.messages.*;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -21,6 +23,8 @@ public class S03_agent_todolist {
     );
 
     private static final AnthropicClient client = AnthropicOkHttpClient.fromEnv();
+
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private static final List<ToolUnion> TOOLS = new ArrayList<>();
 
@@ -148,7 +152,6 @@ public class S03_agent_todolist {
     private static Object invokeTool(String toolName, ToolUseBlock toolUse)
             throws InvocationTargetException, IllegalAccessException {
         String methodName = toolMap.get(toolName);
-        ToolUnion toolUnion = TOOLS_DEFINE_MAP.get(toolName);
         Method method = METHOD_MAP.get(methodName);
         if (method == null) {
             throw new IllegalStateException("method not found: " + methodName);
@@ -156,32 +159,35 @@ public class S03_agent_todolist {
 
         Parameter[] parameters = method.getParameters();
         Object[] methodParams = new Object[parameters.length];
-//        Tool.InputSchema.Properties properties = toolUnion.tool().get().inputSchema().properties().get();
-//        Tool.InputSchema.Properties properties = toolUnion.tool().get().inputSchema()._additionalProperties().get("properties").asObject().get();
-        Map<String, JsonValue> definedProperties = toolUnion.tool().get().inputSchema()._additionalProperties();
         Map<?, ?> inputMap = (Map<?, ?>) toolUse._input().asObject().get();
 
-        for (Map.Entry<String, JsonValue> entry : definedProperties.entrySet()) {
-            String paramName = entry.getKey();
-
+        for (int i = 0; i < parameters.length; i++) {
+            String paramName = parameters[i].getName();
             Object rawValue = inputMap.get(paramName);
-            String paramValue;
-            if (rawValue instanceof JsonString jsonString) {
-                paramValue = (String) jsonString.asString().orElse("");
-            } else if (rawValue instanceof JsonValue jsonValue) {
-                paramValue = jsonValue.toString();
-            } else {
-                paramValue = String.valueOf(rawValue);
+            if (rawValue == null) {
+                continue;
             }
-
-            for (int i = 0; i < parameters.length; i++) {
-                if (paramName.equals(parameters[i].getName())) {
-                    methodParams[i] = paramValue;
-                    break;
-                }
-            }
+            methodParams[i] = convertToolInput(rawValue);
         }
         return method.invoke(null, methodParams);
+    }
+
+    private static String convertToolInput(Object rawValue) {
+        if (rawValue instanceof JsonString jsonString) {
+            return (String) jsonString.asString().orElse("");
+        }
+        if (rawValue instanceof JsonValue jsonValue) {
+            try {
+                return OBJECT_MAPPER.writeValueAsString(jsonValue.convert(Object.class));
+            } catch (JsonProcessingException e) {
+                throw new RuntimeException("serialize json value error", e);
+            }
+        }
+        try {
+            return OBJECT_MAPPER.writeValueAsString(rawValue);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException("serialize tool input error", e);
+        }
     }
 
     private static MessageParam buildToolResult(ToolUseBlock toolUse, String result, boolean isError) {
@@ -269,36 +275,30 @@ public class S03_agent_todolist {
     public static Tool buildTodoTool() {
         Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
         inputSchemaBuild.addRequired("items");
-
-        JsonValue schema = JsonValue.from(new HashMap<String, Object>() {{
-            put("type", "object");
-            put("properties", new HashMap<String, Object>() {{
+        Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties(new HashMap<>() {{
+            put("items", JsonValue.from(new HashMap<String, Object>() {{
+                put("type", "array");
                 put("items", new HashMap<String, Object>() {{
-                    put("type", "array");
-                    put("item", new HashMap<String, Object>() {{
-                        put("type", "object");
-                        put("properties", new HashMap<String, Object>() {{
-                            put("id", new HashMap<String, Object>() {{
-                                put("type", "string");
-                            }});
-                            put("text", new HashMap<String, Object>() {{
-                                put("type", "string");
-                            }});
-                            put("status", new HashMap<String, Object>() {{
-                                put("type", "string");
-                                put("enum", List.of("pending", "in_progress", "completed"));
-                            }});
+                    put("type", "object");
+                    put("properties", new HashMap<String, Object>() {{
+                        put("id", new HashMap<String, Object>() {{
+                            put("type", "string");
                         }});
-                        put("required", List.of("id", "text", "status"));
+                        put("text", new HashMap<String, Object>() {{
+                            put("type", "string");
+                        }});
+                        put("status", new HashMap<String, Object>() {{
+                            put("type", "string");
+                            put("enum", List.of("pending", "in_progress", "completed"));
+                        }});
                     }});
+                    put("required", List.of("id", "text", "status"));
                 }});
-            }});
-            put("required", List.of("items"));
-        }});
+            }}));
+        }}).build();
+        inputSchemaBuild.properties(properties);
 
         inputSchemaBuild.type(JsonValue.from("object"));
-        inputSchemaBuild.additionalProperties((Map<String, JsonValue>) schema.asObject().orElseThrow());
-
         return Tool.builder()
                 .name("todo")
                 .description("Update task list. Track progress on multi-step tasks.")

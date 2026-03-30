@@ -12,7 +12,7 @@ public class TodoManager {
         add("completed");
     }};
 
-    public static void update(List<Item> items) {
+    public static String update(List<Item> items) {
         if (items.size() >= 10) {
             throw new RuntimeException("todo list is too long");
         }
@@ -21,10 +21,10 @@ public class TodoManager {
                 throw new RuntimeException("item status is not right");
             }
         }
-        render(items);
+        return render(items);
     }
 
-    private static void render(List<Item> items) {
+    private static String render(List<Item> items) {
         StringBuilder sb = new StringBuilder();
         int completedTaskSize = 0;
         for (Item item : items) {
@@ -43,7 +43,8 @@ public class TodoManager {
             sb.append(" #").append(item.getId()).append(": ").append(item.getText()).append("\n");
         }
         sb.append(completedTaskSize).append("/").append(items.size()).append(" completed");
-
+        System.out.println(sb.toString());
+        return sb.toString();
     }
 
     static class Item {
