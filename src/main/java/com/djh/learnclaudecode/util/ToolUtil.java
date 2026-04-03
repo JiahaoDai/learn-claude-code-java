@@ -45,6 +45,8 @@ public class ToolUtil {
 
     private static final Map<String, Method> METHOD_MAP = new HashMap<>();
 
+    public static SkillLoader SKILL_LOADER = new SkillLoader(System.getProperty("WORK_DIR", System.getProperty("user.dir")));
+
     static {
         Tool bashTool = buildBashTool();
         Tool readTool = buildReadTool();
@@ -191,6 +193,10 @@ public class ToolUtil {
             }
         }
         return result.isBlank() ? "no summary" : result;
+    }
+
+    public static String loadSkill(String name) {
+        return SKILL_LOADER.getContent(name);
     }
 
     private static MessageParam buildToolResult(ToolUseBlock toolUse, String result, boolean isError) {
@@ -347,6 +353,21 @@ public class ToolUtil {
         return Tool.builder()
                 .name("task")
                 .description("Spawn a subagent with fresh context. It shares the filesystem but not conversation history.")
+                .inputSchema(inputSchemaBuild.build())
+                .build();
+    }
+
+    public static Tool buildLoadSkillTool() {
+        Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
+        inputSchemaBuild.required(List.of("name"));
+        Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties(new HashMap<>() {{
+            put("name", JsonValue.from("string"));
+        }}).build();
+        inputSchemaBuild.properties(properties);
+        inputSchemaBuild.type(JsonValue.from("object"));
+        return Tool.builder()
+                .name("load_skill")
+                .description("Load specialized knowledge by name.")
                 .inputSchema(inputSchemaBuild.build())
                 .build();
     }
