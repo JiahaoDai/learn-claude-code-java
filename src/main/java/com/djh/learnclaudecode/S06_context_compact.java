@@ -82,13 +82,13 @@ public class S06_context_compact {
                     .role(MessageParam.Role.USER)
                     .content(input)
                     .build());
-            AgentLoop(history);
+            history = AgentLoop(history);
             printAssistantText(history.get(history.size() - 1));
         }
         scanner.close();
     }
 
-    public static void AgentLoop(List<MessageParam> history) {
+    public static List<MessageParam> AgentLoop(List<MessageParam> history) {
         while (true) {
             history = ContextCompact.microCompact(history);
             if(evaluateToken(history) > THRESHOLD){
@@ -110,7 +110,7 @@ public class S06_context_compact {
 
             if (!response.stopReason().isPresent()
                     || !"tool_use".equals(response.stopReason().get().asString())) {
-                break;
+                return history;
             }
 
             boolean needCompress = false;
@@ -201,7 +201,7 @@ public class S06_context_compact {
     }
 
     private static void printAssistantText(MessageParam messageParam) {
-        String role = messageParam._role().asString().get();
+        String role = getRole(messageParam);
         if (!role.equalsIgnoreCase(MessageParam.Role.Value.ASSISTANT.name())) {
             return;
         }
@@ -220,6 +220,18 @@ public class S06_context_compact {
             return OBJECT_MAPPER.writeValueAsString(messages).length() / 4;
         } catch (JsonProcessingException e) {
             throw new RuntimeException("cal token error");
+        }
+    }
+
+    private static String getRole(MessageParam message) {
+        try {
+            String role = message._role().asKnown().get().asString();
+            System.out.println(role);
+            return role;
+        } catch (Exception e){
+            String role = message._role().asString().orElse("");
+            System.out.println(role);
+            return role;
         }
     }
 

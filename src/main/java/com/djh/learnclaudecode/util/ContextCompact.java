@@ -107,12 +107,14 @@ public class ContextCompact {
                 summary = "No summary generated.";
             }
 
-            return List.of(
+            List<MessageParam> compactedMessages = new ArrayList<>();
+            compactedMessages.add(
                     MessageParam.builder()
                             .role(MessageParam.Role.USER)
                             .content("[Conversation compressed. Transcript: " + transcriptPath + "]\n\n" + summary)
                             .build()
             );
+            return compactedMessages;
         } catch (IOException e) {
             throw new RuntimeException("context compact save transcript error", e);
         }
@@ -122,7 +124,7 @@ public class ContextCompact {
         List<ToolResultRef> toolResults = new ArrayList<>();
         for (int msgIndex = 0; msgIndex < messages.size(); msgIndex++) {
             MessageParam message = messages.get(msgIndex);
-            if (message.role().value() != MessageParam.Role.Value.USER || !message.content().isBlockParams()) {
+            if (!"user".equalsIgnoreCase(getRole(message)) || !message.content().isBlockParams()) {
                 continue;
             }
             List<ContentBlockParam> blocks = message.content().asBlockParams();
@@ -139,7 +141,7 @@ public class ContextCompact {
     private static Map<String, String> buildToolNameMap(List<MessageParam> messages) {
         Map<String, String> toolNameMap = new HashMap<>();
         for (MessageParam message : messages) {
-            if (message.role().value() != MessageParam.Role.Value.ASSISTANT || !message.content().isBlockParams()) {
+            if (!"assistant".equalsIgnoreCase(getRole(message)) || !message.content().isBlockParams()) {
                 continue;
             }
             for (ContentBlockParam block : message.content().asBlockParams()) {
@@ -147,6 +149,18 @@ public class ContextCompact {
             }
         }
         return toolNameMap;
+    }
+
+    private static String getRole(MessageParam message) {
+        try {
+            String role = message._role().asKnown().get().asString();
+            System.out.println(role);
+            return role;
+        } catch (Exception e){
+            String role = message._role().asString().orElse("");
+            System.out.println(role);
+            return role;
+        }
     }
 
     private static boolean shouldCompact(ToolResultBlockParam toolResult, Map<String, String> toolNameMap) {
