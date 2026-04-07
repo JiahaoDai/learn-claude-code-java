@@ -372,4 +372,19 @@ public class ToolUtil {
                 .build();
     }
 
+    public static Tool buildCompactTool(){
+        Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
+        inputSchemaBuild.required(List.of("focus"));
+        Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties(new HashMap<>() {{
+            put("focus", JsonValue.from("string"));
+        }}).build();
+        inputSchemaBuild.properties(properties);
+        inputSchemaBuild.type(JsonValue.from("object"));
+        return Tool.builder()
+                .name("compact")
+                .description("Trigger manual conversation compression.")
+                .inputSchema(inputSchemaBuild.build())
+                .build();
+    }
+
 }
