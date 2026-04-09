@@ -5,8 +5,8 @@ import com.anthropic.client.okhttp.AnthropicOkHttpClient;
 import com.anthropic.core.JsonString;
 import com.anthropic.core.JsonValue;
 import com.anthropic.models.messages.*;
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JavaType;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -167,25 +167,24 @@ public class S07_task_system {
             if (rawValue == null) {
                 continue;
             }
-            methodParams[i] = convertToolInput(rawValue);
+            methodParams[i] = convertToolInput(rawValue, parameters[i]);
         }
         return method.invoke(null, methodParams);
     }
 
-    private static String convertToolInput(Object rawValue) {
+    private static Object convertToolInput(Object rawValue, Parameter parameter) {
+        Object normalizedValue;
         if (rawValue instanceof JsonString jsonString) {
-            return (String) jsonString.asString().orElse("");
-        }
-        if (rawValue instanceof JsonValue jsonValue) {
-            try {
-                return OBJECT_MAPPER.writeValueAsString(jsonValue.convert(Object.class));
-            } catch (JsonProcessingException e) {
-                throw new RuntimeException("serialize json value error", e);
-            }
+            normalizedValue = jsonString.asString().orElse("");
+        } else if (rawValue instanceof JsonValue jsonValue) {
+            normalizedValue = jsonValue.convert(Object.class);
+        } else {
+            normalizedValue = rawValue;
         }
         try {
-            return OBJECT_MAPPER.writeValueAsString(rawValue);
-        } catch (JsonProcessingException e) {
+            JavaType javaType = OBJECT_MAPPER.getTypeFactory().constructType(parameter.getParameterizedType());
+            return OBJECT_MAPPER.convertValue(normalizedValue, javaType);
+        } catch (IllegalArgumentException e) {
             throw new RuntimeException("serialize tool input error", e);
         }
     }
@@ -326,13 +325,13 @@ public class S07_task_system {
             put("status", JsonValue.from("string"));
             put("addBlockedBy", JsonValue.from(new HashMap<String, Object>() {{
                 put("type", "array");
-                put("addBlockedBy", new HashMap<String, Object>() {{
+                put("items", new HashMap<String, Object>() {{
                     put("type", "integer");
                 }});
             }}));
             put("removeBlockedBy", JsonValue.from(new HashMap<String, Object>() {{
                 put("type", "array");
-                put("removeBlockedBy", new HashMap<String, Object>() {{
+                put("items", new HashMap<String, Object>() {{
                     put("type", "integer");
                 }});
             }}));
@@ -366,4 +365,3 @@ public class S07_task_system {
 
 
 }
-

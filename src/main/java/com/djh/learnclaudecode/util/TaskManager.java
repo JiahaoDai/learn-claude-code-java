@@ -142,9 +142,12 @@ public class TaskManager {
                         break;
                 }
                 sb.append(" #").append(task.getId()).append(": ").append(task.getSubject());
-                String blockedBy = task.getBlockedBy().stream()
-                        .map(Object::toString) // 调用对象的 toString() 方法
-                        .collect(Collectors.joining(","));
+                String blockedBy = "";
+                if(task.getBlockedBy() != null){
+                    blockedBy = task.getBlockedBy().stream()
+                            .map(Object::toString) // 调用对象的 toString() 方法
+                            .collect(Collectors.joining(","));
+                }
                 sb.append("(blocked by:").append(blockedBy).append(")");
                 sb.append("\n");
             }
@@ -168,7 +171,7 @@ public class TaskManager {
                 String taskJson = ToolUtil.runRead(file.toString());
                 Task task = OBJECT_MAPPER.readValue(taskJson, new TypeReference<Task>() {
                 });
-                if (task.getBlockedBy().contains(taskId)) {
+                if (task.getBlockedBy() != null && task.getBlockedBy().contains(taskId)) {
                     task.getBlockedBy().remove(taskId);
                     this.save(task);
                 }
