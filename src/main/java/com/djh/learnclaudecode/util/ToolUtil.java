@@ -44,7 +44,7 @@ public class ToolUtil {
 
     public static SkillLoader SKILL_LOADER = new SkillLoader(System.getProperty("WORK_DIR", System.getProperty("user.dir")));
 
-    public static TaskManager TASK_MANAGER = new TaskManager(System.getProperty("WORK_DIR", System.getProperty("user.dir")) + "./task");
+    public static TaskManager TASK_MANAGER = new TaskManager(System.getProperty("WORK_DIR", System.getProperty("user.dir")) + "/.task");
 
     static {
         Tool bashTool = buildBashTool();

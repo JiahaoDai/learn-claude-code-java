@@ -126,7 +126,6 @@ public class S07_task_system {
                     || !"tool_use".equals(response.stopReason().get().asString())) {
                 break;
             }
-            boolean usedTodo = false;
             for (ContentBlock content : response.content()) {
                 if (content.toolUse().isEmpty()) {
                     continue;
@@ -138,26 +137,14 @@ public class S07_task_system {
                     history.add(buildToolResult(toolUse, "tool is not register", true));
                     continue;
                 }
-                if ("todo".equalsIgnoreCase(toolName)) {
-                    usedTodo = true;
-                }
 
                 try {
                     Object result = invokeTool(toolName, toolUse);
                     history.add(buildToolResult(toolUse, result == null ? "" : result.toString(), false));
                 } catch (Exception e) {
+                    System.out.println(e);
                     history.add(buildToolResult(toolUse, "call tool error: " + e.getMessage(), true));
                 }
-            }
-            rounds_since_todo = usedTodo ? 0 : rounds_since_todo + 1;
-            if (rounds_since_todo >= 3) {
-                MessageParam param = MessageParam.builder()
-                        .role(MessageParam.Role.USER).contentOfBlockParams(List.of(
-                                ContentBlockParam.ofText(
-                                        TextBlockParam.builder().text("<reminder>Update your todos.</reminder>").build()
-                                )
-                        )).build();
-                history.add(param);
             }
         }
     }
@@ -333,7 +320,7 @@ public class S07_task_system {
 
     public static Tool buildTaskUpdateTool() {
         Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
-        inputSchemaBuild.required(List.of("subject"));
+        inputSchemaBuild.required(List.of("taskId", "status"));
         Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties((new HashMap<>() {{
             put("taskId", JsonValue.from("integer"));
             put("status", JsonValue.from("string"));
