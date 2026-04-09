@@ -19,10 +19,7 @@ import java.lang.reflect.Parameter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class ToolUtil {
 
@@ -46,6 +43,8 @@ public class ToolUtil {
     private static final Map<String, Method> METHOD_MAP = new HashMap<>();
 
     public static SkillLoader SKILL_LOADER = new SkillLoader(System.getProperty("WORK_DIR", System.getProperty("user.dir")));
+
+    public static TaskManager TASK_MANAGER = new TaskManager(System.getProperty("WORK_DIR", System.getProperty("user.dir")) + "./task");
 
     static {
         Tool bashTool = buildBashTool();
@@ -79,6 +78,22 @@ public class ToolUtil {
             METHOD_MAP.put(method.getName(), method);
         }
 
+    }
+
+    public static String runTaskCreate(String subject, String description) {
+        return TASK_MANAGER.createTask(subject, description);
+    }
+
+    public static String runTaskUpdate(int taskId, String status, Set<Integer> addBlockedBy, Set<Integer> removeBlockedBy) {
+        return TASK_MANAGER.updateTask(taskId, status, addBlockedBy, removeBlockedBy);
+    }
+
+    public static String runTaskListAll() {
+        return TASK_MANAGER.listAllTasks();
+    }
+
+    public static String runTaskGet(int taskId) {
+        return TASK_MANAGER.getTask(taskId);
     }
 
     public static String runBash(String command) {
@@ -372,7 +387,7 @@ public class ToolUtil {
                 .build();
     }
 
-    public static Tool buildCompactTool(){
+    public static Tool buildCompactTool() {
         Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
         inputSchemaBuild.required(List.of("focus"));
         Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties(new HashMap<>() {{
