@@ -46,6 +46,8 @@ public class ToolUtil {
 
     public static TaskManager TASK_MANAGER = new TaskManager(System.getProperty("WORK_DIR", System.getProperty("user.dir")) + "/.task");
 
+    public static BackGroupManager BACKGROUND_MANAGER = new BackGroupManager();
+
     static {
         Tool bashTool = buildBashTool();
         Tool readTool = buildReadTool();
@@ -94,6 +96,18 @@ public class ToolUtil {
 
     public static String runTaskGet(int taskId) {
         return TASK_MANAGER.getTask(taskId);
+    }
+
+    public static String runBackgroundRun(String command){
+        return BACKGROUND_MANAGER.run(command);
+    }
+
+    public static String runBackgroundCheck(String taskId){
+        return BACKGROUND_MANAGER.check(taskId);
+    }
+
+    public static List<BackGroupManager.Task> drainNotification(){
+        return BACKGROUND_MANAGER.drainNotifications();
     }
 
     public static String runBash(String command) {
