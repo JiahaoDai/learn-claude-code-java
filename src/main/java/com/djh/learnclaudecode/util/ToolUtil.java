@@ -32,15 +32,17 @@ public class ToolUtil {
 
     private static final String modelName = "qwen3.5-plus";
 
-    private static final Map<String, String> toolMap = new HashMap<>();
+    public static final Map<String, String> toolMap = new HashMap<>();
 
     private static final List<ToolUnion> CHILD_TOOLS = new ArrayList<>();
 
     private static final List<ToolUnion> PARENT_TOOLS = new ArrayList<>();
 
+    public static final List<ToolUnion> TEAMMATE_MANAGER_TOOLS = new ArrayList<>();
+
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
-    private static final Map<String, Method> METHOD_MAP = new HashMap<>();
+    public static final Map<String, Method> METHOD_MAP = new HashMap<>();
 
     public static SkillLoader SKILL_LOADER = new SkillLoader(System.getProperty("WORK_DIR", System.getProperty("user.dir")));
 
@@ -48,12 +50,21 @@ public class ToolUtil {
 
     public static BackGroupManager BACKGROUND_MANAGER = new BackGroupManager();
 
+    public static MessageBus MESSAGE_BUS = new MessageBus(".msg");
+
+    public static TeammateManager TEAMMATE_MANAGER = new TeammateManager("config.json");
+
     static {
+        MESSAGE_BUS.setTeammateManager(TEAMMATE_MANAGER);
+        TEAMMATE_MANAGER.setMessageBus(MESSAGE_BUS);
+
         Tool bashTool = buildBashTool();
         Tool readTool = buildReadTool();
         Tool writeTool = buildWriteTool();
         Tool editTool = buildEditTool();
         Tool taskTool = buildSubagentTool();
+        Tool sendMessageTool = buildSendMessageTool();
+        Tool readInboxTool = buildReadInboxTool();
 
         CHILD_TOOLS.add(ToolUnion.ofTool(bashTool));
         CHILD_TOOLS.add(ToolUnion.ofTool(readTool));
@@ -63,11 +74,19 @@ public class ToolUtil {
         PARENT_TOOLS.addAll(CHILD_TOOLS);
         PARENT_TOOLS.add(ToolUnion.ofTool(taskTool));
 
+        TEAMMATE_MANAGER_TOOLS.addAll(CHILD_TOOLS);
+        TEAMMATE_MANAGER_TOOLS.add(ToolUnion.ofTool(buildSendMessageTool()));
+        TEAMMATE_MANAGER_TOOLS.add(ToolUnion.ofTool(buildReadInboxTool()));
+
+
         toolMap.put("bash", "runBash");
         toolMap.put("read_file", "runRead");
         toolMap.put("write_file", "runWrite");
         toolMap.put("edit_file", "runEdit");
         toolMap.put("task", "runSubagent");
+
+        toolMap.put("send_message", "runSendMessage");
+        toolMap.put("read_inbox", "runReadInbox");
 
         Class<?> aClass = null;
         try {
@@ -98,16 +117,24 @@ public class ToolUtil {
         return TASK_MANAGER.getTask(taskId);
     }
 
-    public static String runBackgroundRun(String command){
+    public static String runBackgroundRun(String command) {
         return BACKGROUND_MANAGER.run(command);
     }
 
-    public static String runBackgroundCheck(String taskId){
+    public static String runBackgroundCheck(String taskId) {
         return BACKGROUND_MANAGER.check(taskId);
     }
 
-    public static List<BackGroupManager.Task> drainNotification(){
+    public static List<BackGroupManager.Task> drainNotification() {
         return BACKGROUND_MANAGER.drainNotifications();
+    }
+
+    public static String runSendMessage(String sender, String to, String content, String msgType, Map<String, String> extra) {
+        return MESSAGE_BUS.send(sender, to, content, msgType, extra);
+    }
+
+    public static List<MessageBus.TeamMsg> runReadInbox(String name) {
+        return MESSAGE_BUS.readInbox(name);
     }
 
     public static String runBash(String command) {
@@ -171,6 +198,18 @@ public class ToolUtil {
         } catch (JsonProcessingException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    public static String runSpawnTeammate(String name, String role, String prompt) {
+        return TEAMMATE_MANAGER.spawn(name, role, prompt);
+    }
+
+    public static String runListTeammates() {
+        return TEAMMATE_MANAGER.listAll();
+    }
+
+    public static String runBroadcast(String sender, String content) {
+        return MESSAGE_BUS.broadcast(sender, content);
     }
 
     public static String runSubagent(String prompt) {
@@ -415,5 +454,90 @@ public class ToolUtil {
                 .inputSchema(inputSchemaBuild.build())
                 .build();
     }
+
+    public static Tool buildSendMessageTool() {
+        Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
+        inputSchemaBuild.required(List.of("sender", "to", "content", "msgType"));
+        Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties(new HashMap<>() {{
+            put("sender", JsonValue.from("string"));
+            put("to", JsonValue.from("string"));
+            put("content", JsonValue.from("string"));
+            put("msgType", JsonValue.from("string"));
+            put("extra", JsonValue.from("map"));
+        }}).build();
+        inputSchemaBuild.properties(properties);
+        inputSchemaBuild.type(JsonValue.from(new HashMap<String, Object>() {{
+            put("type", "string");
+            put("enum", List.of("message", "broadcast", "shutdown_request", "shutdown_response", "plan_approval_response"));
+        }}));
+        return Tool.builder()
+                .name("send_message")
+                .description("Send message to a teammate.")
+                .inputSchema(inputSchemaBuild.build())
+                .build();
+    }
+
+    public static Tool buildReadInboxTool() {
+        Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
+        inputSchemaBuild.required(List.of("name"));
+        Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties(new HashMap<>() {{
+            put("name", JsonValue.from("string"));
+        }}).build();
+        inputSchemaBuild.properties(properties);
+        inputSchemaBuild.type(JsonValue.from("object"));
+        return Tool.builder()
+                .name("read_inbox")
+                .description("Read and drain your inbox.")
+                .inputSchema(inputSchemaBuild.build())
+                .build();
+    }
+
+
+    public static Tool buildBroadcastTool() {
+        Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
+        inputSchemaBuild.required(List.of("name"));
+        Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties(new HashMap<>() {{
+            put("sender", JsonValue.from("string"));
+            put("content", JsonValue.from("string"));
+        }}).build();
+        inputSchemaBuild.properties(properties);
+        inputSchemaBuild.type(JsonValue.from("object"));
+        return Tool.builder()
+                .name("broadcast")
+                .description("Send a message to all teammates.")
+                .inputSchema(inputSchemaBuild.build())
+                .build();
+    }
+
+    public static Tool buildSpawnTeammateTool() {
+        Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
+        inputSchemaBuild.required(List.of("name", "role", "prompt"));
+        Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties(new HashMap<>() {{
+            put("name", JsonValue.from("string"));
+            put("role", JsonValue.from("string"));
+            put("prompt", JsonValue.from("string"));
+        }}).build();
+        inputSchemaBuild.properties(properties);
+        inputSchemaBuild.type(JsonValue.from("object"));
+        return Tool.builder()
+                .name("spawn_teammate")
+                .description("Spawn a persistent teammate that runs in its own thread.")
+                .inputSchema(inputSchemaBuild.build())
+                .build();
+    }
+
+    public static Tool buildListTeammateTool() {
+        Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
+        Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties(new HashMap<>() {{
+        }}).build();
+        inputSchemaBuild.properties(properties);
+        inputSchemaBuild.type(JsonValue.from("object"));
+        return Tool.builder()
+                .name("list_teammates")
+                .description("List all teammates with name, role, status.")
+                .inputSchema(inputSchemaBuild.build())
+                .build();
+    }
+
 
 }

@@ -1,0 +1,380 @@
+package com.djh.learnclaudecode;
+
+import com.anthropic.client.AnthropicClient;
+import com.anthropic.client.okhttp.AnthropicOkHttpClient;
+import com.anthropic.core.JsonString;
+import com.anthropic.core.JsonValue;
+import com.anthropic.models.messages.*;
+import com.djh.learnclaudecode.util.MessageBus;
+import com.djh.learnclaudecode.util.ToolUtil;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JavaType;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Parameter;
+import java.util.*;
+
+public class S09_agent_teams {
+
+    private static final String SYSTEM_PROMPT = String.format(
+            "You are a team lead at %s. Spawn teammates and communicate via inboxes.",
+            System.getProperty("WORK_DIR", System.getProperty("user.dir"))
+    );
+
+    private static final AnthropicClient client = AnthropicOkHttpClient.fromEnv();
+
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
+    private static final List<ToolUnion> TOOLS = new ArrayList<>();
+
+    private static final Map<String, ToolUnion> TOOLS_DEFINE_MAP = new HashMap<>();
+
+    private static final String modelName = "qwen3.5-flash";
+
+    private static final Map<String, String> toolMap = new HashMap<>();
+
+    private static final Map<String, Method> METHOD_MAP = new HashMap<>();
+
+    static {
+        Tool bashTool = buildBashTool();
+        Tool readTool = buildReadTool();
+        Tool writeTool = buildWriteTool();
+        Tool editTool = buildEditTool();
+        Tool spawnTeammateTool = ToolUtil.buildSpawnTeammateTool();
+        Tool listTeammateTool = ToolUtil.buildListTeammateTool();
+        Tool sendMessageTool = ToolUtil.buildSendMessageTool();
+        Tool readInboxTool = ToolUtil.buildReadInboxTool();
+        Tool broadcastTool = ToolUtil.buildBroadcastTool();
+
+        TOOLS.add(ToolUnion.ofTool(bashTool));
+        TOOLS.add(ToolUnion.ofTool(readTool));
+        TOOLS.add(ToolUnion.ofTool(writeTool));
+        TOOLS.add(ToolUnion.ofTool(editTool));
+
+        TOOLS.add(ToolUnion.ofTool(spawnTeammateTool));
+        TOOLS.add(ToolUnion.ofTool(listTeammateTool));
+        TOOLS.add(ToolUnion.ofTool(sendMessageTool));
+        TOOLS.add(ToolUnion.ofTool(readInboxTool));
+        TOOLS.add(ToolUnion.ofTool(broadcastTool));
+
+        toolMap.put("bash", "runBash");
+        toolMap.put("read_file", "runRead");
+        toolMap.put("write_file", "runWrite");
+        toolMap.put("edit_file", "runEdit");
+
+        toolMap.put("spawn_teammate", "runSpawnTeammate");
+        toolMap.put("list_teammates", "runListTeammates");
+        toolMap.put("send_message", "runSendMessage");
+        toolMap.put("read_inbox", "runReadInbox");
+        toolMap.put("broadcast", "runBroadcast");
+
+        TOOLS_DEFINE_MAP.put("bash", ToolUnion.ofTool(bashTool));
+        TOOLS_DEFINE_MAP.put("read_file", ToolUnion.ofTool(readTool));
+        TOOLS_DEFINE_MAP.put("write_file", ToolUnion.ofTool(writeTool));
+        TOOLS_DEFINE_MAP.put("edit_file", ToolUnion.ofTool(editTool));
+
+        TOOLS_DEFINE_MAP.put("spawn_teammate", ToolUnion.ofTool(spawnTeammateTool));
+        TOOLS_DEFINE_MAP.put("list_teammates", ToolUnion.ofTool(listTeammateTool));
+        TOOLS_DEFINE_MAP.put("send_message", ToolUnion.ofTool(sendMessageTool));
+        TOOLS_DEFINE_MAP.put("read_inbox", ToolUnion.ofTool(readInboxTool));
+        TOOLS_DEFINE_MAP.put("broadcast", ToolUnion.ofTool(broadcastTool));
+    }
+
+    public static void main(String[] args) {
+        try {
+            Class<?> aClass = Class.forName("com.djh.learnclaudecode.util.ToolUtil");
+            Method[] methods = aClass.getMethods();
+            for (Method method : methods) {
+                METHOD_MAP.put(method.getName(), method);
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("get method error", e);
+        }
+
+        Scanner scanner = new Scanner(System.in);
+        List<MessageParam> history = new ArrayList<>();
+
+        while (true) {
+            String input = scanner.nextLine();
+            if (input.strip().toLowerCase(Locale.ROOT).equals("q")) {
+                break;
+            }
+
+            if (input.strip().toLowerCase(Locale.ROOT).equals("/team")) {
+                System.out.println(ToolUtil.runListTeammates());
+                continue;
+            }
+
+            if (input.strip().toLowerCase(Locale.ROOT).equals("/inbox")) {
+                System.out.println(ToolUtil.runReadInbox("lead"));
+                continue;
+            }
+
+            history.add(MessageParam.builder()
+                    .role(MessageParam.Role.USER)
+                    .content(input)
+                    .build());
+            AgentLoop(history);
+            printAssistantText(history.get(history.size() - 1));
+        }
+        scanner.close();
+
+    }
+
+    public static void AgentLoop(List<MessageParam> history) {
+        while (true) {
+            List<MessageBus.TeamMsg> teamMsgs = ToolUtil.MESSAGE_BUS.readInbox("lead");
+            if (teamMsgs != null && !teamMsgs.isEmpty()) {
+                try {
+                    history.add(buildUserMsg(String.format("<inbox>%s</inbox>", OBJECT_MAPPER.writeValueAsString(teamMsgs))));
+                } catch (JsonProcessingException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+            MessageCreateParams.Builder builder = MessageCreateParams.builder()
+                    .system(SYSTEM_PROMPT)
+                    .thinking(ThinkingConfigDisabled.builder().build())
+                    .maxTokens(8000L)
+                    .tools(TOOLS)
+                    .model(modelName);
+
+            for (MessageParam messageParam : history) {
+                builder.addMessage(messageParam);
+            }
+
+            Message response = client.messages().create(builder.build());
+            history.add(response.toParam());
+
+            if (!response.stopReason().isPresent()
+                    || !"tool_use".equals(response.stopReason().get().asString())) {
+                break;
+            }
+            for (ContentBlock content : response.content()) {
+                if (content.toolUse().isEmpty()) {
+                    continue;
+                }
+
+                ToolUseBlock toolUse = content.toolUse().get();
+                String toolName = toolUse.name();
+                if (!toolMap.containsKey(toolName) || !TOOLS_DEFINE_MAP.containsKey(toolName)) {
+                    history.add(buildToolResult(toolUse, "tool is not register", true));
+                    continue;
+                }
+
+                try {
+                    Object result = invokeTool(toolName, toolUse);
+                    if("read_inbox".equals(toolName)){
+                        result = OBJECT_MAPPER.writeValueAsString(result);
+                    }
+                    history.add(buildToolResult(toolUse, result == null ? "" : result.toString(), false));
+                } catch (Exception e) {
+                    System.out.println(e);
+                    history.add(buildToolResult(toolUse, "call tool error: " + e.getMessage(), true));
+                }
+            }
+        }
+    }
+
+    private static Object invokeTool(String toolName, ToolUseBlock toolUse)
+            throws InvocationTargetException, IllegalAccessException {
+        String methodName = toolMap.get(toolName);
+        Method method = METHOD_MAP.get(methodName);
+        if (method == null) {
+            throw new IllegalStateException("method not found: " + methodName);
+        }
+
+        Parameter[] parameters = method.getParameters();
+        Object[] methodParams = new Object[parameters.length];
+        Map<?, ?> inputMap = (Map<?, ?>) toolUse._input().asObject().get();
+
+        for (int i = 0; i < parameters.length; i++) {
+            String paramName = parameters[i].getName();
+            Object rawValue = inputMap.get(paramName);
+            if (rawValue == null) {
+                continue;
+            }
+            methodParams[i] = convertToolInput(rawValue, parameters[i]);
+        }
+        return method.invoke(null, methodParams);
+    }
+
+    private static Object convertToolInput(Object rawValue, Parameter parameter) {
+        Object normalizedValue;
+        if (rawValue instanceof JsonString jsonString) {
+            normalizedValue = jsonString.asString().orElse("");
+        } else if (rawValue instanceof JsonValue jsonValue) {
+            normalizedValue = jsonValue.convert(Object.class);
+        } else {
+            normalizedValue = rawValue;
+        }
+        try {
+            JavaType javaType = OBJECT_MAPPER.getTypeFactory().constructType(parameter.getParameterizedType());
+            return OBJECT_MAPPER.convertValue(normalizedValue, javaType);
+        } catch (IllegalArgumentException e) {
+            throw new RuntimeException("serialize tool input error", e);
+        }
+    }
+
+    private static MessageParam buildToolResult(ToolUseBlock toolUse, String result, boolean isError) {
+        return MessageParam.builder()
+                .role(MessageParam.Role.USER)
+                .contentOfBlockParams(List.of(
+                        ContentBlockParam.ofToolResult(
+                                ToolResultBlockParam.builder()
+                                        .toolUseId(toolUse.id())
+                                        .content(result)
+                                        .isError(isError)
+                                        .build()
+                        )
+                ))
+                .build();
+    }
+
+    private static MessageParam buildNotificationResult(String content) {
+        return MessageParam.builder()
+                .role(MessageParam.Role.USER)
+                .contentOfBlockParams(List.of(
+                        ContentBlockParam.ofText(
+                                TextBlockParam.builder().text(content).build()
+                        )
+                ))
+                .build();
+    }
+
+    private static MessageParam buildUserMsg(String content) {
+        return MessageParam.builder()
+                .role(MessageParam.Role.USER)
+                .contentOfBlockParams(List.of(
+                        ContentBlockParam.ofText(
+                                TextBlockParam.builder().text(content).build()
+                        )
+                ))
+                .build();
+    }
+
+    private static void printAssistantText(MessageParam messageParam) {
+        String role = messageParam._role().asString().get();
+        if (!role.equalsIgnoreCase(MessageParam.Role.Value.ASSISTANT.name())) {
+            return;
+        }
+
+        if (!messageParam.content().isBlockParams()) {
+            System.out.println(messageParam.content().asString());
+            return;
+        }
+        for (ContentBlockParam content : messageParam.content().asBlockParams()) {
+            content.text().ifPresent(textBlockParam -> System.out.println(textBlockParam.text()));
+        }
+    }
+
+    public static Tool buildBashTool() {
+        Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
+        inputSchemaBuild.addRequired("command");
+        Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties((new HashMap<>() {{
+            put("command", JsonValue.from("string"));
+        }})).build();
+        inputSchemaBuild.properties(properties);
+
+        inputSchemaBuild.type(JsonValue.from("object"));
+        return Tool.builder().inputSchema(inputSchemaBuild.build()).name("bash").description("Run a shell command.").build();
+    }
+
+    public static Tool buildReadTool() {
+        Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
+        inputSchemaBuild.addRequired("path");
+        Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties((new HashMap<>() {{
+            put("path", JsonValue.from("string"));
+        }})).build();
+        inputSchemaBuild.properties(properties);
+
+        inputSchemaBuild.type(JsonValue.from("object"));
+        return Tool.builder().inputSchema(inputSchemaBuild.build()).name("read_file").description("Read file contents.").build();
+    }
+
+    public static Tool buildWriteTool() {
+        Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
+        inputSchemaBuild.required(List.of("path", "content"));
+        Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties((new HashMap<>() {{
+            put("path", JsonValue.from("string"));
+            put("content", JsonValue.from("string"));
+        }})).build();
+        inputSchemaBuild.properties(properties);
+
+        inputSchemaBuild.type(JsonValue.from("object"));
+        return Tool.builder().inputSchema(inputSchemaBuild.build()).name("write_file").description("Write content to file.").build();
+    }
+
+    public static Tool buildEditTool() {
+        Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
+        inputSchemaBuild.required(List.of("path", "oldText", "newText"));
+        Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties((new HashMap<>() {{
+            put("path", JsonValue.from("string"));
+            put("oldText", JsonValue.from("string"));
+            put("newText", JsonValue.from("string"));
+        }})).build();
+        inputSchemaBuild.properties(properties);
+
+        inputSchemaBuild.type(JsonValue.from("object"));
+        return Tool.builder().inputSchema(inputSchemaBuild.build()).name("edit_file").description("Replace exact text in file.").build();
+    }
+
+
+    public static Tool buildTodoTool() {
+        Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
+        inputSchemaBuild.addRequired("items");
+        Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties(new HashMap<>() {{
+            put("items", JsonValue.from(new HashMap<String, Object>() {{
+                put("type", "array");
+                put("items", new HashMap<String, Object>() {{
+                    put("type", "object");
+                    put("properties", new HashMap<String, Object>() {{
+                        put("id", new HashMap<String, Object>() {{
+                            put("type", "string");
+                        }});
+                        put("text", new HashMap<String, Object>() {{
+                            put("type", "string");
+                        }});
+                        put("status", new HashMap<String, Object>() {{
+                            put("type", "string");
+                            put("enum", List.of("pending", "in_progress", "completed"));
+                        }});
+                    }});
+                    put("required", List.of("id", "text", "status"));
+                }});
+            }}));
+        }}).build();
+        inputSchemaBuild.properties(properties);
+
+        inputSchemaBuild.type(JsonValue.from("object"));
+        return Tool.builder()
+                .name("todo")
+                .description("Update task list. Track progress on multi-step tasks.")
+                .inputSchema(inputSchemaBuild.build())
+                .build();
+    }
+
+    public static Tool buildBackgroundRunTool() {
+        Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
+        inputSchemaBuild.required(List.of("command"));
+        Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties((new HashMap<>() {{
+            put("command", JsonValue.from("string"));
+        }})).build();
+        inputSchemaBuild.properties(properties);
+        inputSchemaBuild.type(JsonValue.from("object"));
+        return Tool.builder().inputSchema(inputSchemaBuild.build()).name("background_run").description("Run command in background thread. Returns task_id immediately.").build();
+    }
+
+    public static Tool buildBackgroundCheckTool() {
+        Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
+        inputSchemaBuild.required(List.of("taskId"));
+        Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties((new HashMap<>() {{
+            put("taskId", JsonValue.from("string"));
+        }})).build();
+        inputSchemaBuild.properties(properties);
+        inputSchemaBuild.type(JsonValue.from("object"));
+        return Tool.builder().inputSchema(inputSchemaBuild.build()).name("check_background").description("Check background task status. Omit task_id to list all.").build();
+    }
+}
+
