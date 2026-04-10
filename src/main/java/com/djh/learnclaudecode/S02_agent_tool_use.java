@@ -2,13 +2,12 @@ package com.djh.learnclaudecode;
 
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.client.okhttp.AnthropicOkHttpClient;
-import com.anthropic.core.JsonString;
 import com.anthropic.core.JsonValue;
 import com.anthropic.models.messages.*;
+import com.djh.learnclaudecode.util.ToolUtil;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.lang.reflect.Parameter;
 import java.util.*;
 
 public class S02_agent_tool_use {
@@ -126,35 +125,7 @@ public class S02_agent_tool_use {
 
     private static Object invokeTool(String toolName, ToolUseBlock toolUse)
             throws InvocationTargetException, IllegalAccessException {
-        String methodName = toolMap.get(toolName);
-        ToolUnion toolUnion = TOOLS_DEFINE_MAP.get(toolName);
-        Method method = METHOD_MAP.get(methodName);
-        if (method == null) {
-            throw new IllegalStateException("method not found: " + methodName);
-        }
-
-        Parameter[] parameters = method.getParameters();
-        Object[] methodParams = new Object[parameters.length];
-        Tool.InputSchema.Properties properties = toolUnion.tool().get().inputSchema().properties().get();
-        Map<String, JsonValue> definedProperties = properties._additionalProperties();
-        Map<?, ?> inputMap = (Map<?, ?>) toolUse._input().asObject().get();
-
-        for (Map.Entry<String, JsonValue> entry : definedProperties.entrySet()) {
-            String paramName = entry.getKey();
-            Object rawValue = inputMap.get(paramName);
-            if (!(rawValue instanceof JsonString jsonString)) {
-                continue;
-            }
-
-            String paramValue = (String) jsonString.asString().orElse("");
-            for (int i = 0; i < parameters.length; i++) {
-                if (paramName.equals(parameters[i].getName())) {
-                    methodParams[i] = paramValue;
-                    break;
-                }
-            }
-        }
-        return method.invoke(null, methodParams);
+        return ToolUtil.invokeRegisteredTool(toolMap, METHOD_MAP, toolName, toolUse);
     }
 
     private static MessageParam buildToolResult(ToolUseBlock toolUse, String result, boolean isError) {

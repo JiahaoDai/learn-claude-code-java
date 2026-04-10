@@ -7,6 +7,7 @@ import com.anthropic.core.JsonValue;
 import com.anthropic.models.messages.*;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.File;
@@ -282,11 +283,10 @@ public class ToolUtil {
                 .build();
     }
 
-
-    private static Object invokeTool(String toolName, ToolUseBlock toolUse)
+    public static Object invokeRegisteredTool(Map<String, String> toolMap, Map<String, Method> methodMap, String toolName, ToolUseBlock toolUse)
             throws InvocationTargetException, IllegalAccessException {
         String methodName = toolMap.get(toolName);
-        Method method = METHOD_MAP.get(methodName);
+        Method method = methodMap.get(methodName);
         if (method == null) {
             throw new IllegalStateException("method not found: " + methodName);
         }
@@ -301,27 +301,47 @@ public class ToolUtil {
             if (rawValue == null) {
                 continue;
             }
-            methodParams[i] = convertToolInput(rawValue);
+            methodParams[i] = convertToolInput(rawValue, parameters[i]);
         }
         return method.invoke(null, methodParams);
     }
 
-    private static String convertToolInput(Object rawValue) {
+    public static Object convertToolInput(Object rawValue, Parameter parameter) {
+        Object normalizedValue;
         if (rawValue instanceof JsonString jsonString) {
-            return (String) jsonString.asString().orElse("");
+            normalizedValue = jsonString.asString().orElse("");
+        } else if (rawValue instanceof JsonValue jsonValue) {
+            normalizedValue = jsonValue.convert(Object.class);
+        } else {
+            normalizedValue = rawValue;
         }
-        if (rawValue instanceof JsonValue jsonValue) {
+
+        if (String.class.equals(parameter.getType())) {
+            if (normalizedValue == null) {
+                return "";
+            }
+            if (normalizedValue instanceof String stringValue) {
+                return stringValue;
+            }
             try {
-                return OBJECT_MAPPER.writeValueAsString(jsonValue.convert(Object.class));
+                return OBJECT_MAPPER.writeValueAsString(normalizedValue);
             } catch (JsonProcessingException e) {
-                throw new RuntimeException("serialize json value error", e);
+                throw new RuntimeException("serialize tool input error", e);
             }
         }
+
         try {
-            return OBJECT_MAPPER.writeValueAsString(rawValue);
-        } catch (JsonProcessingException e) {
+            JavaType javaType = OBJECT_MAPPER.getTypeFactory().constructType(parameter.getParameterizedType());
+            return OBJECT_MAPPER.convertValue(normalizedValue, javaType);
+        } catch (IllegalArgumentException e) {
             throw new RuntimeException("serialize tool input error", e);
         }
+    }
+
+
+    private static Object invokeTool(String toolName, ToolUseBlock toolUse)
+            throws InvocationTargetException, IllegalAccessException {
+        return invokeRegisteredTool(toolMap, METHOD_MAP, toolName, toolUse);
     }
 
     public static Tool buildBashTool() {
@@ -462,14 +482,16 @@ public class ToolUtil {
             put("sender", JsonValue.from("string"));
             put("to", JsonValue.from("string"));
             put("content", JsonValue.from("string"));
-            put("msgType", JsonValue.from("string"));
-            put("extra", JsonValue.from("map"));
+            put("msgType", JsonValue.from(new HashMap<String, Object>() {{
+                put("type", "string");
+                put("enum", List.of("message", "broadcast", "shutdown_request", "shutdown_response", "plan_approval_response"));
+            }}));
+            put("extra", JsonValue.from(new HashMap<String, Object>() {{
+                put("type", "object");
+            }}));
         }}).build();
         inputSchemaBuild.properties(properties);
-        inputSchemaBuild.type(JsonValue.from(new HashMap<String, Object>() {{
-            put("type", "string");
-            put("enum", List.of("message", "broadcast", "shutdown_request", "shutdown_response", "plan_approval_response"));
-        }}));
+        inputSchemaBuild.type(JsonValue.from("object"));
         return Tool.builder()
                 .name("send_message")
                 .description("Send message to a teammate.")
@@ -495,7 +517,7 @@ public class ToolUtil {
 
     public static Tool buildBroadcastTool() {
         Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
-        inputSchemaBuild.required(List.of("name"));
+        inputSchemaBuild.required(List.of("sender", "content"));
         Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties(new HashMap<>() {{
             put("sender", JsonValue.from("string"));
             put("content", JsonValue.from("string"));

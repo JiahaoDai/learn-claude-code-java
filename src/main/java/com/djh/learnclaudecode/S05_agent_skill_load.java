@@ -2,16 +2,12 @@ package com.djh.learnclaudecode;
 
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.client.okhttp.AnthropicOkHttpClient;
-import com.anthropic.core.JsonString;
 import com.anthropic.core.JsonValue;
 import com.anthropic.models.messages.*;
 import com.djh.learnclaudecode.util.ToolUtil;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.lang.reflect.Parameter;
 import java.util.*;
 
 public class S05_agent_skill_load {
@@ -25,8 +21,6 @@ public class S05_agent_skill_load {
     );
 
     private static final AnthropicClient client = AnthropicOkHttpClient.fromEnv();
-
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private static final List<ToolUnion> TOOLS = new ArrayList<>();
 
@@ -132,43 +126,7 @@ public class S05_agent_skill_load {
 
     private static Object invokeTool(String toolName, ToolUseBlock toolUse)
             throws InvocationTargetException, IllegalAccessException {
-        String methodName = toolMap.get(toolName);
-        Method method = METHOD_MAP.get(methodName);
-        if (method == null) {
-            throw new IllegalStateException("method not found: " + methodName);
-        }
-
-        Parameter[] parameters = method.getParameters();
-        Object[] methodParams = new Object[parameters.length];
-        Map<?, ?> inputMap = (Map<?, ?>) toolUse._input().asObject().get();
-
-        for (int i = 0; i < parameters.length; i++) {
-            String paramName = parameters[i].getName();
-            Object rawValue = inputMap.get(paramName);
-            if (rawValue == null) {
-                continue;
-            }
-            methodParams[i] = convertToolInput(rawValue);
-        }
-        return method.invoke(null, methodParams);
-    }
-
-    private static String convertToolInput(Object rawValue) {
-        if (rawValue instanceof JsonString jsonString) {
-            return (String) jsonString.asString().orElse("");
-        }
-        if (rawValue instanceof JsonValue jsonValue) {
-            try {
-                return OBJECT_MAPPER.writeValueAsString(jsonValue.convert(Object.class));
-            } catch (JsonProcessingException e) {
-                throw new RuntimeException("serialize json value error", e);
-            }
-        }
-        try {
-            return OBJECT_MAPPER.writeValueAsString(rawValue);
-        } catch (JsonProcessingException e) {
-            throw new RuntimeException("serialize tool input error", e);
-        }
+        return ToolUtil.invokeRegisteredTool(toolMap, METHOD_MAP, toolName, toolUse);
     }
 
     private static MessageParam buildToolResult(ToolUseBlock toolUse, String result, boolean isError) {

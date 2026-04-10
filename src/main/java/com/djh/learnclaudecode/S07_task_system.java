@@ -2,15 +2,12 @@ package com.djh.learnclaudecode;
 
 import com.anthropic.client.AnthropicClient;
 import com.anthropic.client.okhttp.AnthropicOkHttpClient;
-import com.anthropic.core.JsonString;
 import com.anthropic.core.JsonValue;
 import com.anthropic.models.messages.*;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.JavaType;
+import com.djh.learnclaudecode.util.ToolUtil;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.lang.reflect.Parameter;
 import java.util.*;
 
 public class S07_task_system {
@@ -21,8 +18,6 @@ public class S07_task_system {
     );
 
     private static final AnthropicClient client = AnthropicOkHttpClient.fromEnv();
-
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private static final List<ToolUnion> TOOLS = new ArrayList<>();
 
@@ -151,42 +146,7 @@ public class S07_task_system {
 
     private static Object invokeTool(String toolName, ToolUseBlock toolUse)
             throws InvocationTargetException, IllegalAccessException {
-        String methodName = toolMap.get(toolName);
-        Method method = METHOD_MAP.get(methodName);
-        if (method == null) {
-            throw new IllegalStateException("method not found: " + methodName);
-        }
-
-        Parameter[] parameters = method.getParameters();
-        Object[] methodParams = new Object[parameters.length];
-        Map<?, ?> inputMap = (Map<?, ?>) toolUse._input().asObject().get();
-
-        for (int i = 0; i < parameters.length; i++) {
-            String paramName = parameters[i].getName();
-            Object rawValue = inputMap.get(paramName);
-            if (rawValue == null) {
-                continue;
-            }
-            methodParams[i] = convertToolInput(rawValue, parameters[i]);
-        }
-        return method.invoke(null, methodParams);
-    }
-
-    private static Object convertToolInput(Object rawValue, Parameter parameter) {
-        Object normalizedValue;
-        if (rawValue instanceof JsonString jsonString) {
-            normalizedValue = jsonString.asString().orElse("");
-        } else if (rawValue instanceof JsonValue jsonValue) {
-            normalizedValue = jsonValue.convert(Object.class);
-        } else {
-            normalizedValue = rawValue;
-        }
-        try {
-            JavaType javaType = OBJECT_MAPPER.getTypeFactory().constructType(parameter.getParameterizedType());
-            return OBJECT_MAPPER.convertValue(normalizedValue, javaType);
-        } catch (IllegalArgumentException e) {
-            throw new RuntimeException("serialize tool input error", e);
-        }
+        return ToolUtil.invokeRegisteredTool(toolMap, METHOD_MAP, toolName, toolUse);
     }
 
     private static MessageParam buildToolResult(ToolUseBlock toolUse, String result, boolean isError) {
