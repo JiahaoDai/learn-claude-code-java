@@ -7,13 +7,10 @@ import com.anthropic.core.JsonValue;
 import com.anthropic.models.messages.*;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-import java.lang.reflect.Parameter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
@@ -105,13 +102,18 @@ public class TeammateManager {
 
     private void execute(String name, String role, String prompt) {
         String systemPrompt = String.format("You are '%s', role: %s, at %s. \n" +
-                "Use send_message to communicate. Complete your task.", name, role, System.getProperty("WORK_DIR", System.getProperty("user.dir")));
+                        "Use send_message to communicate. " +
+                        "If you receive a teammate message, complete the requested work and send the result back to the sender before finishing. " +
+                        "If you ask another teammate to do work for you, wait for their reply before concluding.",
+                name, role, System.getProperty("WORK_DIR", System.getProperty("user.dir")));
         MessageParam userMsg = buildUserMsg(prompt);
         List<MessageParam> history = new ArrayList<>();
+        Set<String> awaitingReplies = new HashSet<>();
         history.add(userMsg);
 
         for (int i = 0; i < 1000; i++) {
             List<MessageBus.TeamMsg> teamMsgs = this.messageBus.readInbox(name);
+            Set<String> currentInboxSenders = new HashSet<>();
             if (i > 0 && (teamMsgs == null || teamMsgs.isEmpty())) {
                 try {
                     Thread.sleep(2000);
@@ -123,6 +125,8 @@ public class TeammateManager {
             try {
                 if (teamMsgs != null && !teamMsgs.isEmpty()) {
                     for (MessageBus.TeamMsg teamMsg: teamMsgs) {
+                        currentInboxSenders.add(teamMsg.sender);
+                        awaitingReplies.remove(teamMsg.sender);
                         String msg = OBJECT_MAPPER.writeValueAsString(teamMsg);
                         history.add(buildUserMsg(msg));
                     }
@@ -147,6 +151,24 @@ public class TeammateManager {
 
             if (!response.stopReason().isPresent()
                     || !"tool_use".equals(response.stopReason().get().asString())) {
+                String finalText = extractAssistantText(response);
+                if (!currentInboxSenders.isEmpty() && !finalText.isBlank()) {
+                    for (String sender : currentInboxSenders) {
+                        this.messageBus.send(name, sender, finalText, "message", null);
+                    }
+                }
+                if (!awaitingReplies.isEmpty()) {
+                    history.add(buildUserMsg(String.format(
+                            "<coordination>You are still waiting for replies from: %s. Do not conclude yet. Read your inbox and continue.</coordination>",
+                            String.join(", ", awaitingReplies)
+                    )));
+                    try {
+                        Thread.sleep(2000);
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
+                    }
+                    continue;
+                }
                 System.out.println("[subagent] team member: " + name + ", result is:\n");
                 printAssistantText(history.get(history.size() - 1));
                 System.out.println("-------------------------------");
@@ -165,6 +187,12 @@ public class TeammateManager {
                 }
 
                 try {
+                    if ("send_message".equals(toolName)) {
+                        String replyTarget = readStringInput(toolUse, "to");
+                        if (replyTarget != null && !replyTarget.isBlank() && !replyTarget.equals(name)) {
+                            awaitingReplies.add(replyTarget);
+                        }
+                    }
                     Object result = invokeTool(toolName, toolUse);
                     history.add(buildToolResult(toolUse, result == null ? "" : result.toString(), false));
                 } catch (Exception e) {
@@ -199,44 +227,21 @@ public class TeammateManager {
 
     private static Object invokeTool(String toolName, ToolUseBlock toolUse)
             throws InvocationTargetException, IllegalAccessException {
-        String methodName = ToolUtil.toolMap.get(toolName);
-        Method method = ToolUtil.METHOD_MAP.get(methodName);
-        if (method == null) {
-            throw new IllegalStateException("method not found: " + methodName);
-        }
+        return ToolUtil.invokeRegisteredTool(ToolUtil.toolMap, ToolUtil.METHOD_MAP, toolName, toolUse);
+    }
 
-        Parameter[] parameters = method.getParameters();
-        Object[] methodParams = new Object[parameters.length];
+    private static String readStringInput(ToolUseBlock toolUse, String fieldName) {
         Map<?, ?> inputMap = (Map<?, ?>) toolUse._input().asObject().get();
-
-        for (int i = 0; i < parameters.length; i++) {
-            String paramName = parameters[i].getName();
-            Object rawValue = inputMap.get(paramName);
-            if (rawValue == null) {
-                continue;
-            }
-            methodParams[i] = convertToolInput(rawValue, parameters[i]);
-        }
-        return method.invoke(null, methodParams);
-    }
-
-    private static Object convertToolInput(Object rawValue, Parameter parameter) {
-        Object normalizedValue;
+        Object rawValue = inputMap.get(fieldName);
         if (rawValue instanceof JsonString jsonString) {
-            normalizedValue = jsonString.asString().orElse("");
-        } else if (rawValue instanceof JsonValue jsonValue) {
-            normalizedValue = jsonValue.convert(Object.class);
-        } else {
-            normalizedValue = rawValue;
+            return (String) jsonString.asString().orElse("");
         }
-        try {
-            JavaType javaType = OBJECT_MAPPER.getTypeFactory().constructType(parameter.getParameterizedType());
-            return OBJECT_MAPPER.convertValue(normalizedValue, javaType);
-        } catch (IllegalArgumentException e) {
-            throw new RuntimeException("serialize tool input error", e);
+        if (rawValue instanceof JsonValue jsonValue) {
+            Object converted = jsonValue.convert(Object.class);
+            return converted == null ? "" : converted.toString();
         }
+        return rawValue == null ? "" : rawValue.toString();
     }
-
 
     private static MessageParam buildUserMsg(String content) {
         return MessageParam.builder()
@@ -249,6 +254,18 @@ public class TeammateManager {
                 .build();
     }
 
+    private static String extractAssistantText(Message response) {
+        StringBuilder sb = new StringBuilder();
+        for (ContentBlock contentBlock : response.content()) {
+            if (contentBlock.text().isPresent()) {
+                if (!sb.isEmpty()) {
+                    sb.append("\n");
+                }
+                sb.append(contentBlock.text().get().text());
+            }
+        }
+        return sb.toString();
+    }
     private void saveConfig() {
         String teamconfig = null;
         try {
