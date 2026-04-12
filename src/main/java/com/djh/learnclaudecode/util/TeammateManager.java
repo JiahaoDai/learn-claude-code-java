@@ -103,17 +103,19 @@ public class TeammateManager {
     private void execute(String name, String role, String prompt) {
         String systemPrompt = String.format("You are '%s', role: %s, at %s. \n" +
                         "Use send_message to communicate. " +
-                        "If you receive a teammate message, complete the requested work and send the result back to the sender before finishing. " +
-                        "If you ask another teammate to do work for you, wait for their reply before concluding.",
+                        "Use explicit message protocol fields in extra when needed: conversation_id, reply_to, and message_kind=request|reply. " +
+                        "If you receive a teammate request, complete the requested work and send exactly one reply back to the sender before finishing. " +
+                        "If you receive a reply, use it to continue your own work and do not auto-reply to that reply. " +
+                        "If you ask another teammate to do work for you, send a request and wait for their reply before concluding.",
                 name, role, System.getProperty("WORK_DIR", System.getProperty("user.dir")));
         MessageParam userMsg = buildUserMsg(prompt);
         List<MessageParam> history = new ArrayList<>();
-        Set<String> awaitingReplies = new HashSet<>();
+        Map<String, String> awaitingReplies = new HashMap<>();
         history.add(userMsg);
 
         for (int i = 0; i < 1000; i++) {
             List<MessageBus.TeamMsg> teamMsgs = this.messageBus.readInbox(name);
-            Set<String> currentInboxSenders = new HashSet<>();
+            List<MessageBus.TeamMsg> pendingRequests = new ArrayList<>();
             if (i > 0 && (teamMsgs == null || teamMsgs.isEmpty())) {
                 try {
                     Thread.sleep(2000);
@@ -125,8 +127,12 @@ public class TeammateManager {
             try {
                 if (teamMsgs != null && !teamMsgs.isEmpty()) {
                     for (MessageBus.TeamMsg teamMsg: teamMsgs) {
-                        currentInboxSenders.add(teamMsg.sender);
-                        awaitingReplies.remove(teamMsg.sender);
+                        if (teamMsg.isReply() && teamMsg.replyTo() != null) {
+                            awaitingReplies.remove(teamMsg.replyTo());
+                        }
+                        if (teamMsg.isRequest()) {
+                            pendingRequests.add(teamMsg);
+                        }
                         String msg = OBJECT_MAPPER.writeValueAsString(teamMsg);
                         history.add(buildUserMsg(msg));
                     }
@@ -152,15 +158,21 @@ public class TeammateManager {
             if (!response.stopReason().isPresent()
                     || !"tool_use".equals(response.stopReason().get().asString())) {
                 String finalText = extractAssistantText(response);
-                if (!currentInboxSenders.isEmpty() && !finalText.isBlank()) {
-                    for (String sender : currentInboxSenders) {
-                        this.messageBus.send(name, sender, finalText, "message", null);
+                if (!pendingRequests.isEmpty() && !finalText.isBlank()) {
+                    for (MessageBus.TeamMsg requestMsg : pendingRequests) {
+                        Map<String, String> replyExtra = new HashMap<>();
+                        if (requestMsg.conversationId() != null && !requestMsg.conversationId().isBlank()) {
+                            replyExtra.put(MessageBus.EXTRA_CONVERSATION_ID, requestMsg.conversationId());
+                        }
+                        replyExtra.put(MessageBus.EXTRA_REPLY_TO, requestMsg.messageId);
+                        replyExtra.put(MessageBus.EXTRA_MESSAGE_KIND, MessageBus.MESSAGE_KIND_REPLY);
+                        this.messageBus.send(name, requestMsg.sender, finalText, "message", replyExtra);
                     }
                 }
                 if (!awaitingReplies.isEmpty()) {
                     history.add(buildUserMsg(String.format(
                             "<coordination>You are still waiting for replies from: %s. Do not conclude yet. Read your inbox and continue.</coordination>",
-                            String.join(", ", awaitingReplies)
+                            String.join(", ", awaitingReplies.values())
                     )));
                     try {
                         Thread.sleep(2000);
@@ -188,10 +200,15 @@ public class TeammateManager {
 
                 try {
                     if ("send_message".equals(toolName)) {
-                        String replyTarget = readStringInput(toolUse, "to");
-                        if (replyTarget != null && !replyTarget.isBlank() && !replyTarget.equals(name)) {
-                            awaitingReplies.add(replyTarget);
+                        MessageBus.SendReceipt receipt = sendMessageWithProtocol(toolUse, name);
+                        if (receipt.ok
+                                && MessageBus.MESSAGE_KIND_REQUEST.equalsIgnoreCase(receipt.messageKind)
+                                && receipt.messageId != null
+                                && !receipt.messageId.isBlank()) {
+                            awaitingReplies.put(receipt.messageId, readStringInput(toolUse, "to"));
                         }
+                        history.add(buildToolResult(toolUse, receipt.message == null ? "" : receipt.message, !receipt.ok));
+                        continue;
                     }
                     Object result = invokeTool(toolName, toolUse);
                     history.add(buildToolResult(toolUse, result == null ? "" : result.toString(), false));
@@ -241,6 +258,43 @@ public class TeammateManager {
             return converted == null ? "" : converted.toString();
         }
         return rawValue == null ? "" : rawValue.toString();
+    }
+
+    private MessageBus.SendReceipt sendMessageWithProtocol(ToolUseBlock toolUse, String senderName) {
+        String sender = readStringInput(toolUse, "sender");
+        String to = readStringInput(toolUse, "to");
+        String content = readStringInput(toolUse, "content");
+        String msgType = readStringInput(toolUse, "msgType");
+        Map<String, String> extra = readMapInput(toolUse, "extra");
+        if (sender == null || sender.isBlank()) {
+            sender = senderName;
+        }
+        return this.messageBus.sendDetailed(sender, to, content, msgType, extra);
+    }
+
+    private static Map<String, String> readMapInput(ToolUseBlock toolUse, String fieldName) {
+        Map<?, ?> inputMap = (Map<?, ?>) toolUse._input().asObject().get();
+        Object rawValue = inputMap.get(fieldName);
+        if (rawValue == null) {
+            return null;
+        }
+        Object converted;
+        if (rawValue instanceof JsonValue jsonValue) {
+            converted = jsonValue.convert(Object.class);
+        } else {
+            converted = rawValue;
+        }
+        if (!(converted instanceof Map<?, ?> mapValue)) {
+            return null;
+        }
+        Map<String, String> result = new HashMap<>();
+        for (Map.Entry<?, ?> entry : mapValue.entrySet()) {
+            if (entry.getKey() == null || entry.getValue() == null) {
+                continue;
+            }
+            result.put(entry.getKey().toString(), entry.getValue().toString());
+        }
+        return result.isEmpty() ? null : result;
     }
 
     private static MessageParam buildUserMsg(String content) {

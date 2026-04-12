@@ -494,7 +494,7 @@ public class ToolUtil {
         inputSchemaBuild.type(JsonValue.from("object"));
         return Tool.builder()
                 .name("send_message")
-                .description("Send message to a teammate.")
+                .description("Send message to a teammate. Use extra.conversation_id to keep a thread, extra.reply_to when replying to a specific message, and extra.message_kind as request or reply.")
                 .inputSchema(inputSchemaBuild.build())
                 .build();
     }

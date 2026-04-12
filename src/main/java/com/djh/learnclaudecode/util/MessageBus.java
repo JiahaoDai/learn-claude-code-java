@@ -12,6 +12,15 @@ import java.sql.Timestamp;
 import java.util.*;
 
 public class MessageBus {
+    public static final String EXTRA_CONVERSATION_ID = "conversation_id";
+
+    public static final String EXTRA_REPLY_TO = "reply_to";
+
+    public static final String EXTRA_MESSAGE_KIND = "message_kind";
+
+    public static final String MESSAGE_KIND_REQUEST = "request";
+
+    public static final String MESSAGE_KIND_REPLY = "reply";
 
     private String msgDir;
 
@@ -44,21 +53,12 @@ public class MessageBus {
         this.teammateManager = teammateManager;
     }
 
-    public String send(String sender, String to, String content, String msgType, Map<String, String> extra) {
-        if(sender.equals("alice")){
-            System.out.println("[subagent:" + sender + "]: send msg is: " + content);
-        }
-
-        if(sender.equals("bob")){
-            System.out.println("[subagent:" + sender + "]: send msg is: " + content);
-        }
+    public SendReceipt sendDetailed(String sender, String to, String content, String msgType, Map<String, String> extra) {
         if (!VALID_MSG_TYPES.contains(msgType)) {
-            return String.format("Error: Invalid type '%s'. Valid: [%s]", msgType, String.join(",", VALID_MSG_TYPES.stream().map(String::valueOf).toList()));
+            return SendReceipt.error(String.format("Error: Invalid type '%s'. Valid: [%s]", msgType, String.join(",", VALID_MSG_TYPES.stream().map(String::valueOf).toList())));
         }
-        TeamMsg teamMsg = TeamMsg.build(msgType, sender, content);
-        if (extra != null && !extra.isEmpty()) {
-            teamMsg.extra = extra;
-        }
+        Map<String, String> normalizedExtra = normalizeExtra(msgType, extra);
+        TeamMsg teamMsg = TeamMsg.build(msgType, sender, content, normalizedExtra);
 
         String inboxPath = this.msgDir + "/" + to + ".jsonl";
         if (!Files.exists(Path.of(inboxPath))) {
@@ -75,8 +75,11 @@ public class MessageBus {
             throw new RuntimeException(e);
         }
         appendContentToFile(inboxPath, jsonMsg + "\n");
-        return String.format("Sent %s to %s", msgType, to);
+        return SendReceipt.success(String.format("Sent %s to %s", msgType, to), teamMsg);
+    }
 
+    public String send(String sender, String to, String content, String msgType, Map<String, String> extra) {
+        return sendDetailed(sender, to, content, msgType, extra).message;
     }
 
     public List<TeamMsg> readInbox(String name) {
@@ -113,6 +116,22 @@ public class MessageBus {
         return String.format("Broadcast to %s teammates", count);
     }
 
+    private Map<String, String> normalizeExtra(String msgType, Map<String, String> extra) {
+        Map<String, String> normalized = new HashMap<>();
+        if (extra != null) {
+            normalized.putAll(extra);
+        }
+        if ("message".equalsIgnoreCase(msgType)) {
+            normalized.computeIfAbsent(EXTRA_CONVERSATION_ID, ignored -> UUID.randomUUID().toString());
+            if (normalized.containsKey(EXTRA_REPLY_TO)) {
+                normalized.putIfAbsent(EXTRA_MESSAGE_KIND, MESSAGE_KIND_REPLY);
+            } else {
+                normalized.putIfAbsent(EXTRA_MESSAGE_KIND, MESSAGE_KIND_REQUEST);
+            }
+        }
+        return normalized.isEmpty() ? null : normalized;
+    }
+
     private List<String> readFileByLine(String filePath) {
         List<String> results = new ArrayList<>();
         try (BufferedReader br = new BufferedReader(
@@ -147,6 +166,8 @@ public class MessageBus {
 
 
     public static class TeamMsg {
+        public String messageId;
+
         public String type;
 
         public String sender;
@@ -157,12 +178,66 @@ public class MessageBus {
 
         public Map<String, String> extra;
 
-        public static TeamMsg build(String type, String sender, String content) {
+        public static TeamMsg build(String type, String sender, String content, Map<String, String> extra) {
             TeamMsg teamMsg = new TeamMsg();
+            teamMsg.messageId = UUID.randomUUID().toString();
             teamMsg.type = type;
             teamMsg.sender = sender;
             teamMsg.content = content;
+            teamMsg.extra = extra;
             return teamMsg;
+        }
+
+        public String conversationId() {
+            return extra == null ? null : extra.get(EXTRA_CONVERSATION_ID);
+        }
+
+        public String replyTo() {
+            return extra == null ? null : extra.get(EXTRA_REPLY_TO);
+        }
+
+        public String messageKind() {
+            return extra == null ? null : extra.get(EXTRA_MESSAGE_KIND);
+        }
+
+        public boolean isReply() {
+            return MESSAGE_KIND_REPLY.equalsIgnoreCase(messageKind());
+        }
+
+        public boolean isRequest() {
+            if (!"message".equalsIgnoreCase(type)) {
+                return false;
+            }
+            return !isReply();
+        }
+    }
+
+    public static class SendReceipt {
+        public boolean ok;
+
+        public String message;
+
+        public String messageId;
+
+        public String conversationId;
+
+        public String messageKind;
+
+        public static SendReceipt success(String message, TeamMsg teamMsg) {
+            SendReceipt receipt = new SendReceipt();
+            receipt.ok = true;
+            receipt.message = message;
+            receipt.messageId = teamMsg.messageId;
+            receipt.conversationId = teamMsg.conversationId();
+            receipt.messageKind = teamMsg.messageKind();
+            return receipt;
+        }
+
+        public static SendReceipt error(String message) {
+            SendReceipt receipt = new SendReceipt();
+            receipt.ok = false;
+            receipt.message = message;
+            return receipt;
         }
     }
 }
