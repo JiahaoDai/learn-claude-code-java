@@ -1,5 +1,6 @@
 package com.djh.learnclaudecode.util;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -88,6 +89,9 @@ public class MessageBus {
             return Collections.EMPTY_LIST;
         }
         List<String> msgLists = readFileByLine(inboxPath);
+        if (msgLists.isEmpty()) {
+            return Collections.EMPTY_LIST;
+        }
         List<TeamMsg> teamMsgs = new ArrayList<>();
         for (String msg : msgLists) {
             TeamMsg teamMsg = null;
@@ -101,6 +105,10 @@ public class MessageBus {
         }
         // 清空文件内容
         ToolUtil.runWrite(inboxPath, "");
+        System.out.println("read msg from " + name + ".jsonl");
+        for (String msgList : msgLists) {
+            System.out.println("----" + msgList);
+        }
         return teamMsgs;
     }
 
@@ -164,7 +172,7 @@ public class MessageBus {
         }
     }
 
-
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class TeamMsg {
         public String messageId;
 
@@ -177,6 +185,11 @@ public class MessageBus {
         public Timestamp timestamp = new Timestamp(System.currentTimeMillis());
 
         public Map<String, String> extra;
+
+        // Backward compatibility for messages written before the explicit protocol fields.
+        public Boolean reply;
+
+        public Boolean request;
 
         public static TeamMsg build(String type, String sender, String content, Map<String, String> extra) {
             TeamMsg teamMsg = new TeamMsg();
@@ -201,6 +214,9 @@ public class MessageBus {
         }
 
         public boolean isReply() {
+            if (Boolean.TRUE.equals(reply)) {
+                return true;
+            }
             return MESSAGE_KIND_REPLY.equalsIgnoreCase(messageKind());
         }
 
@@ -208,7 +224,58 @@ public class MessageBus {
             if (!"message".equalsIgnoreCase(type)) {
                 return false;
             }
+            if (Boolean.TRUE.equals(request)) {
+                return true;
+            }
             return !isReply();
+        }
+
+        public String getMessageId() {
+            return messageId;
+        }
+
+        public void setMessageId(String messageId) {
+            this.messageId = messageId;
+        }
+
+        public String getType() {
+            return type;
+        }
+
+        public void setType(String type) {
+            this.type = type;
+        }
+
+        public String getSender() {
+            return sender;
+        }
+
+        public void setSender(String sender) {
+            this.sender = sender;
+        }
+
+        public String getContent() {
+            return content;
+        }
+
+        public void setContent(String content) {
+            this.content = content;
+        }
+
+        public Timestamp getTimestamp() {
+            return timestamp;
+        }
+
+        public void setTimestamp(Timestamp timestamp) {
+            this.timestamp = timestamp;
+        }
+
+        public Map<String, String> getExtra() {
+            return extra;
+        }
+
+        public void setExtra(Map<String, String> extra) {
+            this.extra = extra;
         }
     }
 

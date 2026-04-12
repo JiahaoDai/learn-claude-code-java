@@ -29,7 +29,7 @@ public class TeammateManager {
 
     private static final AnthropicClient client = AnthropicOkHttpClient.fromEnv();
 
-    private static final String modelName = "qwen3.5-flash";
+    private static final String modelName = "qwen3.5-27b";
 
     public TeammateManager(String teamConfigPath) {
         this.teamConfigPath = teamConfigPath;
@@ -70,7 +70,7 @@ public class TeammateManager {
         System.out.println("[subagent] --------------spawn " + name + "----------------------");
         TeamMember member = findMember(name);
         if (member != null) {
-            if ("idle".equals(member.status) || "shutdown".equals(member.status)) {
+            if ("working".equals(member.status)) {
                 return String.format("Error: '%s' is currently %s", name, member.status);
             }
             member.status = "working";

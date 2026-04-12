@@ -28,7 +28,7 @@ public class S09_agent_teams {
 
     private static final Map<String, ToolUnion> TOOLS_DEFINE_MAP = new HashMap<>();
 
-    private static final String modelName = "qwen3.5-flash";
+    private static final String modelName = "qwen3.5-27b";
 
     private static final Map<String, String> toolMap = new HashMap<>();
 
