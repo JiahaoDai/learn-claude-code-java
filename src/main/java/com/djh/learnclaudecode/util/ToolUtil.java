@@ -69,6 +69,7 @@ public class ToolUtil {
 
         Tool idleTool = buildIdleTool();
         Tool claimTaskTool = buildClaimTaskTool();
+        Tool taskUpdateTool = buildTaskUpdateTool();
 
         CHILD_TOOLS.add(ToolUnion.ofTool(bashTool));
         CHILD_TOOLS.add(ToolUnion.ofTool(readTool));
@@ -84,6 +85,7 @@ public class ToolUtil {
 
         TEAMMATE_MANAGER_TOOLS.add(ToolUnion.ofTool(idleTool));
         TEAMMATE_MANAGER_TOOLS.add(ToolUnion.ofTool(claimTaskTool));
+        TEAMMATE_MANAGER_TOOLS.add(ToolUnion.ofTool(taskUpdateTool));
 
 
         toolMap.put("bash", "runBash");
@@ -97,6 +99,7 @@ public class ToolUtil {
 
         toolMap.put("idle", "runIdle");
         toolMap.put("claim_task", "runClaimTask");
+        toolMap.put("task_update", "runTaskUpdate");
 
         Class<?> aClass = null;
         try {
@@ -624,6 +627,34 @@ public class ToolUtil {
         return Tool.builder()
                 .name("claim_task")
                 .description("Claim a task from the board by ID.")
+                .inputSchema(inputSchemaBuild.build())
+                .build();
+    }
+
+    public static Tool buildTaskUpdateTool() {
+        Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
+        inputSchemaBuild.required(List.of("taskId", "status"));
+        Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties((new HashMap<>() {{
+            put("taskId", JsonValue.from("integer"));
+            put("status", JsonValue.from("string"));
+            put("addBlockedBy", JsonValue.from(new HashMap<String, Object>() {{
+                put("type", "array");
+                put("items", new HashMap<String, Object>() {{
+                    put("type", "integer");
+                }});
+            }}));
+            put("removeBlockedBy", JsonValue.from(new HashMap<String, Object>() {{
+                put("type", "array");
+                put("items", new HashMap<String, Object>() {{
+                    put("type", "integer");
+                }});
+            }}));
+        }})).build();
+        inputSchemaBuild.properties(properties);
+        inputSchemaBuild.type(JsonValue.from("object"));
+        return Tool.builder()
+                .name("task_update")
+                .description("Update task status or dependencies. Mark claimed tasks completed before going idle.")
                 .inputSchema(inputSchemaBuild.build())
                 .build();
     }

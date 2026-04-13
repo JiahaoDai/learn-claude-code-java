@@ -285,18 +285,25 @@ public class TeammateManager {
                         "Use explicit message protocol fields in extra when needed: conversation_id, reply_to, and message_kind=request|reply. " +
                         "If you receive a teammate request, complete the requested work and send exactly one reply back to the sender before finishing. " +
                         "If you receive a reply, use it to continue your own work and do not auto-reply to that reply. " +
-                        "If you ask another teammate to do work for you, send a request and wait for their reply before concluding." +
+                        "If you ask another teammate to do work for you, send a request and wait for their reply before concluding. " +
+                        "If you are working on a claimed board task, call task_update with status=completed before you go idle. " +
                         "Use idle tool when you have no more work. You will auto-claim new tasks.",
                 name, role, System.getProperty("WORK_DIR", System.getProperty("user.dir")));
         MessageParam userMsg = buildUserMsg(prompt);
         List<MessageParam> history = new ArrayList<>();
         Map<String, String> awaitingReplies = new HashMap<>();
+        Integer currentTaskId = null;
+        boolean hasPendingLocalWork = true;
         history.add(userMsg);
-        while(true){
+        while (true) {
             for (int i = 0; i < 30; i++) {
                 List<MessageBus.TeamMsg> teamMsgs = this.messageBus.readInbox(name);
                 List<MessageBus.TeamMsg> pendingRequests = new ArrayList<>();
-                if (i > 0 && (teamMsgs == null || teamMsgs.isEmpty())) {
+                boolean hasInboxMessages = teamMsgs != null && !teamMsgs.isEmpty();
+                if (hasInboxMessages) {
+                    hasPendingLocalWork = true;
+                }
+                if (i > 0 && !hasInboxMessages && !hasPendingLocalWork) {
                     try {
                         Thread.sleep(2000);
                         continue;
@@ -332,6 +339,7 @@ public class TeammateManager {
                     builder.addMessage(messageParam);
                 }
 
+                hasPendingLocalWork = false;
                 Message response = client.messages().create(builder.build());
                 history.add(response.toParam());
 
@@ -354,6 +362,7 @@ public class TeammateManager {
                                 "<coordination>You are still waiting for replies from: %s. Do not conclude yet. Read your inbox and continue.</coordination>",
                                 String.join(", ", awaitingReplies.values())
                         )));
+                        hasPendingLocalWork = true;
                         try {
                             Thread.sleep(2000);
                         } catch (InterruptedException e) {
@@ -364,6 +373,22 @@ public class TeammateManager {
                     System.out.println("[subagent] team member: " + name + ", result is:\n");
                     printAssistantText(history.get(history.size() - 1));
                     System.out.println("-------------------------------");
+                    if (currentTaskId != null) {
+                        ToolUtil.runTaskUpdate(currentTaskId, "completed", null, null);
+                        history.add(buildUserMsg(String.format(
+                                "<task-status>Task #%s has been marked completed. Look for more work.</task-status>",
+                                currentTaskId
+                        )));
+                        hasPendingLocalWork = true;
+                        currentTaskId = null;
+                        IdleResult idleResult = enterIdlePhase(name, role, history);
+                        if (!idleResult.resumed) {
+                            return;
+                        }
+                        currentTaskId = idleResult.taskId;
+                        hasPendingLocalWork = true;
+                        continue;
+                    }
                     break;
                 }
 
@@ -390,74 +415,116 @@ public class TeammateManager {
                                 awaitingReplies.put(receipt.messageId, readStringInput(toolUse, "to"));
                             }
                             history.add(buildToolResult(toolUse, receipt.message == null ? "" : receipt.message, !receipt.ok));
-                            continue;
+                            hasPendingLocalWork = true;
                         } else if ("idle".equals(toolName)) {
                             idleRequested = true;
                             String output = "Entering idle phase. Will poll for new tasks.";
                             history.add(buildToolResult(toolUse, output, false));
+                            hasPendingLocalWork = true;
+                        } else if ("claim_task".equals(toolName)) {
+                            Object result = invokeTool(toolName, toolUse);
+                            String resultText = result == null ? "" : result.toString();
+                            if (!resultText.startsWith("Error:")) {
+                                currentTaskId = readIntInput(toolUse, "taskId");
+                            }
+                            history.add(buildToolResult(toolUse, resultText, resultText.startsWith("Error:")));
+                            hasPendingLocalWork = true;
+                        } else if ("task_update".equals(toolName)) {
+                            Integer updatedTaskId = readIntInput(toolUse, "taskId");
+                            String status = readStringInput(toolUse, "status");
+                            Object result = invokeTool(toolName, toolUse);
+                            if (updatedTaskId != null && updatedTaskId.equals(currentTaskId) && "completed".equals(status)) {
+                                currentTaskId = null;
+                            }
+                            history.add(buildToolResult(toolUse, result == null ? "" : result.toString(), false));
+                            hasPendingLocalWork = true;
                         } else {
                             Object result = invokeTool(toolName, toolUse);
                             history.add(buildToolResult(toolUse, result == null ? "" : result.toString(), false));
+                            hasPendingLocalWork = true;
                         }
                     } catch (Exception e) {
                         System.out.println(e);
                         history.add(buildToolResult(toolUse, "call tool error: " + e.getMessage(), true));
+                        hasPendingLocalWork = true;
                     }
                 }
 
-                if (idleRequested) {
-                    break;
+                if (!idleRequested) {
+                    continue;
                 }
-
-                this.setStatus(name, "idle");
-                Boolean resume = false;
-                int POLL_INTERVAL = 5;
-                int IDLE_TIMEOUT = 60;
-                int polls = IDLE_TIMEOUT / POLL_INTERVAL;
-                for (int j = 0; j < polls; j++) {
-                    try {
-                        Thread.sleep(POLL_INTERVAL);
-                    } catch (InterruptedException e) {
-                        throw new RuntimeException(e);
-                    }
-                    List<MessageBus.TeamMsg> inboxes = ToolUtil.runReadInbox(name);
-                    if (inboxes != null && !inboxes.isEmpty()) {
-                        for (int k = 0; k < inboxes.size(); k++) {
-                            try {
-                                history.add(buildUserMsg(OBJECT_MAPPER.writeValueAsString(inboxes.get(k))));
-                            } catch (JsonProcessingException e) {
-                                throw new RuntimeException(e);
-                            }
-                        }
-                        resume = true;
-                    }
-                    List<TaskManager.Task> tasks = ToolUtil.runScanUnclaimTasks();
-                    if (tasks != null && !tasks.isEmpty()) {
-                        TaskManager.Task task = tasks.get(0);
-                        String result = ToolUtil.runClaimTask(task.getId(), name);
-                        if (result.startsWith("Error:")) {
-                            continue;
-                        }
-                        String taskPrompt = String.format("<auto-claimed>Task #%s: %s\n %s</auto-claimed>", task.getId(), task.getSubject(), (task.getDescription() == null || task.getDescription().isBlank()) ? "" : task.getDescription());
-                        System.out.println("   [subagent-task-claim] " + taskPrompt);
-                        if (history.size() <= 3) {
-                            history.add(0, makeIdentityBlock(name, role, "code-team"));
-                            history.add(1, buildAssistanceMsg(String.format("I am %s. Continuing.", name)));
-                        }
-                        history.add(buildUserMsg(taskPrompt));
-                        history.add(buildAssistanceMsg(String.format("Claimed task #%s. Working on it.", task.getId())));
-                        resume = true;
-                        break;
-                    }
+                if (currentTaskId != null) {
+                    ToolUtil.runTaskUpdate(currentTaskId, "completed", null, null);
+                    history.add(buildUserMsg(String.format(
+                            "<task-status>Task #%s was marked completed before idling.</task-status>",
+                            currentTaskId
+                    )));
+                    hasPendingLocalWork = true;
+                    currentTaskId = null;
                 }
-                if (!resume) {
-                    this.setStatus(name, "shutdown");
-                    System.out.println("thread name is " + Thread.currentThread().getName() + ", done");
+                IdleResult idleResult = enterIdlePhase(name, role, history);
+                if (!idleResult.resumed) {
+                    System.out.println("   [subagent: stop]" + name + "  end");
                     return;
                 }
-                this.setStatus(name, "working");
+                currentTaskId = idleResult.taskId;
+                hasPendingLocalWork = true;
             }
         }
+    }
+
+    private IdleResult enterIdlePhase(String name, String role, List<MessageParam> history) {
+        this.setStatus(name, "idle");
+        int pollIntervalMillis = 5000;
+        int idleTimeoutMillis = 60000;
+        int polls = idleTimeoutMillis / pollIntervalMillis;
+        for (int j = 0; j < polls; j++) {
+            try {
+                Thread.sleep(pollIntervalMillis);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+
+            List<MessageBus.TeamMsg> inboxes = ToolUtil.runReadInbox(name);
+            if (inboxes != null && !inboxes.isEmpty()) {
+                for (MessageBus.TeamMsg inbox : inboxes) {
+                    try {
+                        history.add(buildUserMsg(OBJECT_MAPPER.writeValueAsString(inbox)));
+                    } catch (JsonProcessingException e) {
+                        throw new RuntimeException(e);
+                    }
+                }
+                this.setStatus(name, "working");
+                return IdleResult.resume(null);
+            }
+
+            List<TaskManager.Task> tasks = ToolUtil.runScanUnclaimTasks();
+            if (tasks != null && !tasks.isEmpty()) {
+                TaskManager.Task task = tasks.get(0);
+                String result = ToolUtil.runClaimTask(task.getId(), name);
+                if (result.startsWith("Error:")) {
+                    continue;
+                }
+                String taskPrompt = String.format(
+                        "<auto-claimed>Task #%s: %s\n%s\nMark this task completed with task_update before you go idle again.</auto-claimed>",
+                        task.getId(),
+                        task.getSubject(),
+                        (task.getDescription() == null || task.getDescription().isBlank()) ? "" : task.getDescription()
+                );
+                System.out.println("   [subagent-task-claim] " + taskPrompt);
+                if (history.size() <= 3) {
+                    history.add(0, makeIdentityBlock(name, role, "code-team"));
+                    history.add(1, buildAssistanceMsg(String.format("I am %s. Continuing.", name)));
+                }
+                history.add(buildUserMsg(taskPrompt));
+                history.add(buildAssistanceMsg(String.format("Claimed task #%s. Working on it.", task.getId())));
+                this.setStatus(name, "working");
+                return IdleResult.resume(task.getId());
+            }
+        }
+        this.setStatus(name, "shutdown");
+        System.out.println("thread name is " + Thread.currentThread().getName() + ", done");
+        return IdleResult.shutdown();
     }
 
     public MessageParam makeIdentityBlock(String name, String role, String teamName) {
@@ -497,6 +564,32 @@ public class TeammateManager {
             return converted == null ? "" : converted.toString();
         }
         return rawValue == null ? "" : rawValue.toString();
+    }
+
+    private static Integer readIntInput(ToolUseBlock toolUse, String fieldName) {
+        String value = readStringInput(toolUse, fieldName);
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        return Integer.parseInt(value);
+    }
+
+    private static class IdleResult {
+        private final boolean resumed;
+        private final Integer taskId;
+
+        private IdleResult(boolean resumed, Integer taskId) {
+            this.resumed = resumed;
+            this.taskId = taskId;
+        }
+
+        private static IdleResult resume(Integer taskId) {
+            return new IdleResult(true, taskId);
+        }
+
+        private static IdleResult shutdown() {
+            return new IdleResult(false, null);
+        }
     }
 
     private MessageBus.SendReceipt sendMessageWithProtocol(ToolUseBlock toolUse, String senderName) {

@@ -93,35 +93,40 @@ public class TaskManager {
     }
 
     public String updateTask(Integer taskId, String status, Set<Integer> addBlockedBy, Set<Integer> removeBlockedBy) {
-        if (taskId == null) {
-            return "taskId can not be null";
-        }
-        Task task = this.load(taskId);
-        if (status != null && STATUS_SET.contains(status)) {
-            task.setStatus(status);
-            if ("completed".equals(status)) {
-                clearDependency(taskId);
-            }
-        }
-
-        Set<Integer> blocked = task.getBlockedBy();
-        if (blocked == null) {
-            blocked = new HashSet<>();
-            task.setBlockedBy(blocked);
-        }
-        if (addBlockedBy != null && !addBlockedBy.isEmpty()) {
-            blocked.addAll(addBlockedBy);
-        }
-        if (removeBlockedBy != null && !removeBlockedBy.isEmpty()) {
-            for (Integer blockId : removeBlockedBy) {
-                blocked.remove(blockId);
-            }
-        }
-        this.save(task);
+        lock.lock();
         try {
-            return OBJECT_MAPPER.writeValueAsString(task);
-        } catch (JsonProcessingException e) {
-            throw new RuntimeException(e);
+            if (taskId == null) {
+                return "taskId can not be null";
+            }
+            Task task = this.load(taskId);
+            if (status != null && STATUS_SET.contains(status)) {
+                task.setStatus(status);
+                if ("completed".equals(status)) {
+                    clearDependency(taskId);
+                }
+            }
+
+            Set<Integer> blocked = task.getBlockedBy();
+            if (blocked == null) {
+                blocked = new HashSet<>();
+                task.setBlockedBy(blocked);
+            }
+            if (addBlockedBy != null && !addBlockedBy.isEmpty()) {
+                blocked.addAll(addBlockedBy);
+            }
+            if (removeBlockedBy != null && !removeBlockedBy.isEmpty()) {
+                for (Integer blockId : removeBlockedBy) {
+                    blocked.remove(blockId);
+                }
+            }
+            this.save(task);
+            try {
+                return OBJECT_MAPPER.writeValueAsString(task);
+            } catch (JsonProcessingException e) {
+                throw new RuntimeException(e);
+            }
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -249,7 +254,7 @@ public class TaskManager {
                 return String.format("Error: Task %s} cannot be claimed because its status is '%s'", taskId, task.getStatus());
             }
             if (task.getBlockedBy() != null && !task.getBlockedBy().isEmpty()) {
-                String.format("Error: Task %s is blocked by other task(s) and cannot be claimed yet", taskId);
+                return String.format("Error: Task %s is blocked by other task(s) and cannot be claimed yet", taskId);
             }
             task.setOwner(owner);
             task.setStatus("in_progress");
