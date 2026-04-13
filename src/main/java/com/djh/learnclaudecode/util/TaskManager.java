@@ -2,6 +2,7 @@ package com.djh.learnclaudecode.util;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonMappingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
@@ -9,10 +10,12 @@ import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 public class TaskManager {
@@ -29,19 +32,21 @@ public class TaskManager {
 
     private AtomicInteger nextId = new AtomicInteger(0);
 
+    private static final ReentrantLock lock = new ReentrantLock();
+
     public TaskManager(String taskDir) {
         this.taskDir = taskDir;
         this.nextId.set(getMaxTaskId());
     }
 
-    private List<Path> getTaskFile(){
+    private List<Path> getTaskFile() {
         try {
             List<Path> taskFiles = Files.list(Path.of(this.taskDir))
                     .filter(Files::isRegularFile)  // 只保留文件，排除目录
                     .filter(path -> path.getFileName().toString().matches("task_.*\\.json"))
                     .collect(Collectors.toList());
             return taskFiles;
-        }catch (Exception e){
+        } catch (Exception e) {
             throw new RuntimeException("get task file error");
         }
     }
@@ -104,10 +109,10 @@ public class TaskManager {
             blocked = new HashSet<>();
             task.setBlockedBy(blocked);
         }
-        if(addBlockedBy != null && !addBlockedBy.isEmpty()){
+        if (addBlockedBy != null && !addBlockedBy.isEmpty()) {
             blocked.addAll(addBlockedBy);
         }
-        if(removeBlockedBy != null && !removeBlockedBy.isEmpty()){
+        if (removeBlockedBy != null && !removeBlockedBy.isEmpty()) {
             for (Integer blockId : removeBlockedBy) {
                 blocked.remove(blockId);
             }
@@ -143,7 +148,7 @@ public class TaskManager {
                 }
                 sb.append(" #").append(task.getId()).append(": ").append(task.getSubject());
                 String blockedBy = "";
-                if(task.getBlockedBy() != null){
+                if (task.getBlockedBy() != null) {
                     blockedBy = task.getBlockedBy().stream()
                             .map(Object::toString) // 调用对象的 toString() 方法
                             .collect(Collectors.joining(","));
@@ -199,6 +204,63 @@ public class TaskManager {
             ToolUtil.runWrite(path, OBJECT_MAPPER.writeValueAsString(task));
         } catch (JsonProcessingException e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    public List<Task> scanUnclaimedTasks() {
+        if (!Files.exists(Path.of(this.taskDir))) {
+            try {
+                Files.createDirectory(Path.of(this.taskDir));
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        }
+        List<Path> taskFiles = getTaskFile();
+        List<Task> unclaimed = new ArrayList<>();
+        for (Path file : taskFiles) {
+            String s = ToolUtil.runRead(file.toString());
+            try {
+                Task task = OBJECT_MAPPER.readValue(s, new TypeReference<Task>() {
+                });
+                if (task.getStatus().equals("pending") && (task.getOwner() == null || task.getOwner().isBlank()) && (task.getBlockedBy() == null || task.getBlockedBy().isEmpty())) {
+                    unclaimed.add(task);
+                }
+            } catch (JsonProcessingException e) {
+                throw new RuntimeException(e);
+            }
+        }
+        return unclaimed;
+    }
+
+    public String claimTask(int taskId, String owner) {
+        try {
+            lock.lock();
+            String path = this.taskDir + "/" + String.format("task_%s.json", taskId);
+            if (!Files.exists(Path.of(path))) {
+                return String.format("Error: Task %s not found", taskId);
+            }
+            Task task = OBJECT_MAPPER.readValue(getTask(taskId), new TypeReference<Task>() {
+            });
+            if (task.getOwner() != null && !task.getOwner().isBlank()) {
+                String existingOwner = task.getOwner().isBlank() ? "someone else" : task.getOwner();
+                return String.format("Error: Task %s has already been claimed by %s", taskId, existingOwner);
+            }
+            if (!"pending".equals(task.getStatus())) {
+                return String.format("Error: Task %s} cannot be claimed because its status is '%s'", taskId, task.getStatus());
+            }
+            if (task.getBlockedBy() != null && !task.getBlockedBy().isEmpty()) {
+                String.format("Error: Task %s is blocked by other task(s) and cannot be claimed yet", taskId);
+            }
+            task.setOwner(owner);
+            task.setStatus("in_progress");
+            ToolUtil.runWrite(path, OBJECT_MAPPER.writeValueAsString(task));
+            return String.format("Claimed task #%s for %s", taskId, owner);
+        } catch (JsonMappingException e) {
+            throw new RuntimeException(e);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException(e);
+        } finally {
+            lock.unlock();
         }
     }
 

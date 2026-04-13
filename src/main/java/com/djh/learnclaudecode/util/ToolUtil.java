@@ -67,6 +67,9 @@ public class ToolUtil {
         Tool sendMessageTool = buildSendMessageTool();
         Tool readInboxTool = buildReadInboxTool();
 
+        Tool idleTool = buildIdleTool();
+        Tool claimTaskTool = buildClaimTaskTool();
+
         CHILD_TOOLS.add(ToolUnion.ofTool(bashTool));
         CHILD_TOOLS.add(ToolUnion.ofTool(readTool));
         CHILD_TOOLS.add(ToolUnion.ofTool(writeTool));
@@ -76,8 +79,11 @@ public class ToolUtil {
         PARENT_TOOLS.add(ToolUnion.ofTool(taskTool));
 
         TEAMMATE_MANAGER_TOOLS.addAll(CHILD_TOOLS);
-        TEAMMATE_MANAGER_TOOLS.add(ToolUnion.ofTool(buildSendMessageTool()));
-        TEAMMATE_MANAGER_TOOLS.add(ToolUnion.ofTool(buildReadInboxTool()));
+        TEAMMATE_MANAGER_TOOLS.add(ToolUnion.ofTool(sendMessageTool));
+        TEAMMATE_MANAGER_TOOLS.add(ToolUnion.ofTool(readInboxTool));
+
+        TEAMMATE_MANAGER_TOOLS.add(ToolUnion.ofTool(idleTool));
+        TEAMMATE_MANAGER_TOOLS.add(ToolUnion.ofTool(claimTaskTool));
 
 
         toolMap.put("bash", "runBash");
@@ -88,6 +94,9 @@ public class ToolUtil {
 
         toolMap.put("send_message", "runSendMessage");
         toolMap.put("read_inbox", "runReadInbox");
+
+        toolMap.put("idle", "runIdle");
+        toolMap.put("claim_task", "runClaimTask");
 
         Class<?> aClass = null;
         try {
@@ -205,12 +214,28 @@ public class ToolUtil {
         return TEAMMATE_MANAGER.spawn(name, role, prompt);
     }
 
+    public static String runSpawnTeammate2(String name, String role, String prompt) {
+        return TEAMMATE_MANAGER.spawnTeamMember(name, role, prompt);
+    }
+
     public static String runListTeammates() {
         return TEAMMATE_MANAGER.listAll();
     }
 
     public static String runBroadcast(String sender, String content) {
         return MESSAGE_BUS.broadcast(sender, content);
+    }
+
+    public static String runClaimTask(int taskId, String owner) {
+        return TASK_MANAGER.claimTask(taskId, owner);
+    }
+
+    public static String runIdle() {
+        return "Entering idle phase. Will poll for new tasks.";
+    }
+
+    public static List<TaskManager.Task> runScanUnclaimTasks() {
+        return TASK_MANAGER.scanUnclaimedTasks();
     }
 
     public static String runSubagent(String prompt) {
@@ -561,5 +586,46 @@ public class ToolUtil {
                 .build();
     }
 
+    public static Tool buildIdleTool() {
+        Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
+        Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties(new HashMap<>() {{
+        }}).build();
+        inputSchemaBuild.properties(properties);
+        inputSchemaBuild.type(JsonValue.from("object"));
+        return Tool.builder()
+                .name("idle")
+                .description("Signal that you have no more work. Enters idle polling phase.")
+                .inputSchema(inputSchemaBuild.build())
+                .build();
+    }
+
+    public static Tool buildLeaderIdleTool() {
+        Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
+        Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties(new HashMap<>() {{
+        }}).build();
+        inputSchemaBuild.properties(properties);
+        inputSchemaBuild.type(JsonValue.from("object"));
+        return Tool.builder()
+                .name("idle")
+                .description("Enter idle state (for lead -- rarely used).")
+                .inputSchema(inputSchemaBuild.build())
+                .build();
+    }
+
+    public static Tool buildClaimTaskTool() {
+        Tool.InputSchema.Builder inputSchemaBuild = new Tool.InputSchema.Builder();
+        inputSchemaBuild.required(List.of("taskId", "owner"));
+        Tool.InputSchema.Properties properties = Tool.InputSchema.Properties.builder().additionalProperties(new HashMap<>() {{
+            put("taskId", JsonValue.from("integer"));
+            put("owner", JsonValue.from("owner"));
+        }}).build();
+        inputSchemaBuild.properties(properties);
+        inputSchemaBuild.type(JsonValue.from("object"));
+        return Tool.builder()
+                .name("claim_task")
+                .description("Claim a task from the board by ID.")
+                .inputSchema(inputSchemaBuild.build())
+                .build();
+    }
 
 }

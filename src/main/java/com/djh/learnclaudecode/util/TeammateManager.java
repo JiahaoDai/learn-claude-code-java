@@ -66,8 +66,15 @@ public class TeammateManager {
         }
     }
 
+    private void setStatus(String name, String status) {
+        TeamMember member = this.findMember(name);
+        if (member != null) {
+            member.setStatus(status);
+            this.saveConfig();
+        }
+    }
+
     public String spawn(String name, String role, String prompt) {
-        System.out.println("[subagent] --------------spawn " + name + "----------------------");
         TeamMember member = findMember(name);
         if (member != null) {
             if ("working".equals(member.status)) {
@@ -75,6 +82,7 @@ public class TeammateManager {
             }
             member.status = "working";
             member.role = role;
+            System.out.println("[subagent] --------------spawn, exist team member" + name + "----------------------");
         } else {
             TeamMember teamMember = new TeamMember();
             teamMember.name = name;
@@ -87,6 +95,7 @@ public class TeammateManager {
                 this.teamConfig.members = new ArrayList<>();
             }
             this.teamConfig.members.add(teamMember);
+            System.out.println("[subagent] --------------spawn " + name + "----------------------");
         }
         this.saveConfig();
         Thread thread = new Thread(new Runnable() {
@@ -100,6 +109,48 @@ public class TeammateManager {
         return String.format("Spawned '%s' (role: %s)", name, role);
     }
 
+    public String spawnTeamMember(String name, String role, String prompt) {
+        TeamMember member = findMember(name);
+        if (member != null) {
+            if ("working".equals(member.status)) {
+                return String.format("Error: '%s' is currently %s", name, member.status);
+            }
+            member.status = "working";
+            member.role = role;
+            System.out.println("[subagent] --------------spawn, exist team member" + name + "----------------------");
+        } else {
+            TeamMember teamMember = new TeamMember();
+            teamMember.name = name;
+            teamMember.role = role;
+            teamMember.status = "working";
+            if (this.teamConfig == null) {
+                this.teamConfig = new TeamConfig();
+                this.teamConfig.members = new ArrayList<>();
+            } else if (this.teamConfig.members == null) {
+                this.teamConfig.members = new ArrayList<>();
+            }
+            this.teamConfig.members.add(teamMember);
+            System.out.println("[subagent] --------------spawn " + name + "----------------------");
+        }
+        this.saveConfig();
+        Thread thread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                loop(name, role, prompt);
+            }
+        });
+        try {
+            thread.join();
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+        threadMap.put(name, thread);
+        thread.start();
+        return String.format("Spawned '%s' (role: %s)", name, role);
+    }
+
+
+    // 用于s09_agent_teams
     private void execute(String name, String role, String prompt) {
         String systemPrompt = String.format("You are '%s', role: %s, at %s. \n" +
                         "Use send_message to communicate. " +
@@ -126,7 +177,7 @@ public class TeammateManager {
             }
             try {
                 if (teamMsgs != null && !teamMsgs.isEmpty()) {
-                    for (MessageBus.TeamMsg teamMsg: teamMsgs) {
+                    for (MessageBus.TeamMsg teamMsg : teamMsgs) {
                         if (teamMsg.isReply() && teamMsg.replyTo() != null) {
                             awaitingReplies.remove(teamMsg.replyTo());
                         }
@@ -219,12 +270,200 @@ public class TeammateManager {
             }
         }
         List<TeamMember> members = this.teamConfig.members;
-        members.forEach((member)->{
-            if(name.equals(member.getName()) && !"shutdown".equals(member.getStatus())){
+        members.forEach((member) -> {
+            if (name.equals(member.getName()) && !"shutdown".equals(member.getStatus())) {
                 member.status = "idle";
             }
         });
         saveConfig();
+        System.out.println("thread name is " + Thread.currentThread().getName() + ", done");
+    }
+
+    private void loop(String name, String role, String prompt) {
+        String systemPrompt = String.format("You are '%s', role: %s, at %s. \n" +
+                        "Use send_message to communicate. " +
+                        "Use explicit message protocol fields in extra when needed: conversation_id, reply_to, and message_kind=request|reply. " +
+                        "If you receive a teammate request, complete the requested work and send exactly one reply back to the sender before finishing. " +
+                        "If you receive a reply, use it to continue your own work and do not auto-reply to that reply. " +
+                        "If you ask another teammate to do work for you, send a request and wait for their reply before concluding." +
+                        "Use idle tool when you have no more work. You will auto-claim new tasks.",
+                name, role, System.getProperty("WORK_DIR", System.getProperty("user.dir")));
+        MessageParam userMsg = buildUserMsg(prompt);
+        List<MessageParam> history = new ArrayList<>();
+        Map<String, String> awaitingReplies = new HashMap<>();
+        history.add(userMsg);
+        while(true){
+            for (int i = 0; i < 30; i++) {
+                List<MessageBus.TeamMsg> teamMsgs = this.messageBus.readInbox(name);
+                List<MessageBus.TeamMsg> pendingRequests = new ArrayList<>();
+                if (i > 0 && (teamMsgs == null || teamMsgs.isEmpty())) {
+                    try {
+                        Thread.sleep(2000);
+                        continue;
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
+                    }
+                }
+                try {
+                    if (teamMsgs != null && !teamMsgs.isEmpty()) {
+                        for (MessageBus.TeamMsg teamMsg : teamMsgs) {
+                            if (teamMsg.isReply() && teamMsg.replyTo() != null) {
+                                awaitingReplies.remove(teamMsg.replyTo());
+                            }
+                            if (teamMsg.isRequest()) {
+                                pendingRequests.add(teamMsg);
+                            }
+                            String msg = OBJECT_MAPPER.writeValueAsString(teamMsg);
+                            history.add(buildUserMsg(msg));
+                        }
+                    }
+                } catch (JsonProcessingException e) {
+                    throw new RuntimeException(e);
+                }
+
+                MessageCreateParams.Builder builder = MessageCreateParams.builder()
+                        .system(systemPrompt)
+                        .thinking(ThinkingConfigDisabled.builder().build())
+                        .maxTokens(8000L)
+                        .tools(ToolUtil.TEAMMATE_MANAGER_TOOLS)
+                        .model(modelName);
+
+                for (MessageParam messageParam : history) {
+                    builder.addMessage(messageParam);
+                }
+
+                Message response = client.messages().create(builder.build());
+                history.add(response.toParam());
+
+                if (!response.stopReason().isPresent()
+                        || !"tool_use".equals(response.stopReason().get().asString())) {
+                    String finalText = extractAssistantText(response);
+                    if (!pendingRequests.isEmpty() && !finalText.isBlank()) {
+                        for (MessageBus.TeamMsg requestMsg : pendingRequests) {
+                            Map<String, String> replyExtra = new HashMap<>();
+                            if (requestMsg.conversationId() != null && !requestMsg.conversationId().isBlank()) {
+                                replyExtra.put(MessageBus.EXTRA_CONVERSATION_ID, requestMsg.conversationId());
+                            }
+                            replyExtra.put(MessageBus.EXTRA_REPLY_TO, requestMsg.messageId);
+                            replyExtra.put(MessageBus.EXTRA_MESSAGE_KIND, MessageBus.MESSAGE_KIND_REPLY);
+                            this.messageBus.send(name, requestMsg.sender, finalText, "message", replyExtra);
+                        }
+                    }
+                    if (!awaitingReplies.isEmpty()) {
+                        history.add(buildUserMsg(String.format(
+                                "<coordination>You are still waiting for replies from: %s. Do not conclude yet. Read your inbox and continue.</coordination>",
+                                String.join(", ", awaitingReplies.values())
+                        )));
+                        try {
+                            Thread.sleep(2000);
+                        } catch (InterruptedException e) {
+                            throw new RuntimeException(e);
+                        }
+                        continue;
+                    }
+                    System.out.println("[subagent] team member: " + name + ", result is:\n");
+                    printAssistantText(history.get(history.size() - 1));
+                    System.out.println("-------------------------------");
+                    break;
+                }
+
+                Boolean idleRequested = false;
+                for (ContentBlock content : response.content()) {
+                    if (content.toolUse().isEmpty()) {
+                        continue;
+                    }
+
+                    ToolUseBlock toolUse = content.toolUse().get();
+                    String toolName = toolUse.name();
+                    if (!ToolUtil.toolMap.containsKey(toolName)) {
+                        history.add(buildToolResult(toolUse, "tool is not register", true));
+                        continue;
+                    }
+
+                    try {
+                        if ("send_message".equals(toolName)) {
+                            MessageBus.SendReceipt receipt = sendMessageWithProtocol(toolUse, name);
+                            if (receipt.ok
+                                    && MessageBus.MESSAGE_KIND_REQUEST.equalsIgnoreCase(receipt.messageKind)
+                                    && receipt.messageId != null
+                                    && !receipt.messageId.isBlank()) {
+                                awaitingReplies.put(receipt.messageId, readStringInput(toolUse, "to"));
+                            }
+                            history.add(buildToolResult(toolUse, receipt.message == null ? "" : receipt.message, !receipt.ok));
+                            continue;
+                        } else if ("idle".equals(toolName)) {
+                            idleRequested = true;
+                            String output = "Entering idle phase. Will poll for new tasks.";
+                            history.add(buildToolResult(toolUse, output, false));
+                        } else {
+                            Object result = invokeTool(toolName, toolUse);
+                            history.add(buildToolResult(toolUse, result == null ? "" : result.toString(), false));
+                        }
+                    } catch (Exception e) {
+                        System.out.println(e);
+                        history.add(buildToolResult(toolUse, "call tool error: " + e.getMessage(), true));
+                    }
+                }
+
+                if (idleRequested) {
+                    break;
+                }
+
+                this.setStatus(name, "idle");
+                Boolean resume = false;
+                int POLL_INTERVAL = 5;
+                int IDLE_TIMEOUT = 60;
+                int polls = IDLE_TIMEOUT / POLL_INTERVAL;
+                for (int j = 0; j < polls; j++) {
+                    try {
+                        Thread.sleep(POLL_INTERVAL);
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
+                    }
+                    List<MessageBus.TeamMsg> inboxes = ToolUtil.runReadInbox(name);
+                    if (inboxes != null && !inboxes.isEmpty()) {
+                        for (int k = 0; k < inboxes.size(); k++) {
+                            try {
+                                history.add(buildUserMsg(OBJECT_MAPPER.writeValueAsString(inboxes.get(k))));
+                            } catch (JsonProcessingException e) {
+                                throw new RuntimeException(e);
+                            }
+                        }
+                        resume = true;
+                    }
+                    List<TaskManager.Task> tasks = ToolUtil.runScanUnclaimTasks();
+                    if (tasks != null && !tasks.isEmpty()) {
+                        TaskManager.Task task = tasks.get(0);
+                        String result = ToolUtil.runClaimTask(task.getId(), name);
+                        if (result.startsWith("Error:")) {
+                            continue;
+                        }
+                        String taskPrompt = String.format("<auto-claimed>Task #%s: %s\n %s</auto-claimed>", task.getId(), task.getSubject(), (task.getDescription() == null || task.getDescription().isBlank()) ? "" : task.getDescription());
+                        System.out.println("   [subagent-task-claim] " + taskPrompt);
+                        if (history.size() <= 3) {
+                            history.add(0, makeIdentityBlock(name, role, "code-team"));
+                            history.add(1, buildAssistanceMsg(String.format("I am %s. Continuing.", name)));
+                        }
+                        history.add(buildUserMsg(taskPrompt));
+                        history.add(buildAssistanceMsg(String.format("Claimed task #%s. Working on it.", task.getId())));
+                        resume = true;
+                        break;
+                    }
+                }
+                if (!resume) {
+                    this.setStatus(name, "shutdown");
+                    System.out.println("thread name is " + Thread.currentThread().getName() + ", done");
+                    return;
+                }
+                this.setStatus(name, "working");
+            }
+        }
+    }
+
+    public MessageParam makeIdentityBlock(String name, String role, String teamName) {
+        String content = String.format("<identity>You are '%s', role: %s, team: %s. Continue your work.</identity>", name, role, teamName);
+        System.out.println("[  subagent-makeIdentityBlock]" + content);
+        return buildUserMsg(content);
     }
 
     private static MessageParam buildToolResult(ToolUseBlock toolUse, String result, boolean isError) {
@@ -308,6 +547,18 @@ public class TeammateManager {
                 .build();
     }
 
+    private static MessageParam buildAssistanceMsg(String content) {
+        System.out.println("[subagent: buildAssistanceMsg] " + content);
+        return MessageParam.builder()
+                .role(MessageParam.Role.ASSISTANT)
+                .contentOfBlockParams(List.of(
+                        ContentBlockParam.ofText(
+                                TextBlockParam.builder().text(content).build()
+                        )
+                ))
+                .build();
+    }
+
     private static String extractAssistantText(Message response) {
         StringBuilder sb = new StringBuilder();
         for (ContentBlock contentBlock : response.content()) {
@@ -320,6 +571,7 @@ public class TeammateManager {
         }
         return sb.toString();
     }
+
     private void saveConfig() {
         String teamconfig = null;
         try {
