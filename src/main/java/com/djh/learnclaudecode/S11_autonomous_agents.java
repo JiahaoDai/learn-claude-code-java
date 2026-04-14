@@ -12,6 +12,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.*;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 public class S11_autonomous_agents {
 
@@ -103,39 +105,55 @@ public class S11_autonomous_agents {
             throw new RuntimeException("get method error", e);
         }
 
-        Scanner scanner = new Scanner(System.in);
         List<MessageParam> history = new ArrayList<>();
-
+        LinkedBlockingQueue<String> inputQueue = new LinkedBlockingQueue<>();
+        startInputReader(inputQueue);
         while (true) {
-            String input = scanner.nextLine();
-            if (input.strip().toLowerCase(Locale.ROOT).equals("q")) {
-                break;
+            String input;
+            try {
+                input = inputQueue.poll(1000, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
             }
 
-            if (input.strip().toLowerCase(Locale.ROOT).equals("/team")) {
-                System.out.println(ToolUtil.runListTeammates());
+            boolean shouldRunLead = false;
+            if (input != null) {
+                if (input.strip().toLowerCase(Locale.ROOT).equals("q")) {
+                    break;
+                }
+
+                if (input.strip().toLowerCase(Locale.ROOT).equals("/team")) {
+                    System.out.println(ToolUtil.runListTeammates());
+                    continue;
+                }
+
+                if (input.strip().toLowerCase(Locale.ROOT).equals("/inbox")) {
+                    System.out.println(ToolUtil.runReadInbox("lead"));
+                    continue;
+                }
+
+                if (input.strip().toLowerCase(Locale.ROOT).equals("/tasks")) {
+                    System.out.println(ToolUtil.runTaskListAll());
+                    continue;
+                }
+
+                history.add(MessageParam.builder()
+                        .role(MessageParam.Role.USER)
+                        .content(input)
+                        .build());
+                shouldRunLead = true;
+            } else if (ToolUtil.MESSAGE_BUS.hasInboxMessages("lead")) {
+                shouldRunLead = true;
+            } else if (!history.isEmpty() && ToolUtil.TEAMMATE_MANAGER.hasActiveMembers()) {
+                continue;
+            } else {
                 continue;
             }
 
-            if (input.strip().toLowerCase(Locale.ROOT).equals("/inbox")) {
-                System.out.println(ToolUtil.runReadInbox("lead"));
-                continue;
-            }
-
-            if(input.strip().toLowerCase(Locale.ROOT).equals("/tasks")){
-                System.out.println(ToolUtil.runTaskListAll());
-                continue;
-            }
-
-            history.add(MessageParam.builder()
-                    .role(MessageParam.Role.USER)
-                    .content(input)
-                    .build());
+            int historySizeBefore = history.size();
             AgentLoop(history);
-            printAssistantText(history.get(history.size() - 1));
+            printAssistantTexts(history, historySizeBefore);
         }
-        scanner.close();
-
     }
 
     public static void AgentLoop(List<MessageParam> history) {
@@ -235,6 +253,9 @@ public class S11_autonomous_agents {
     }
 
     private static void printAssistantText(MessageParam messageParam) {
+        if(!messageParam._role().asString().isPresent()){
+            return;
+        }
         String role = messageParam._role().asString().get();
         if (!role.equalsIgnoreCase(MessageParam.Role.Value.ASSISTANT.name())) {
             return;
@@ -247,6 +268,33 @@ public class S11_autonomous_agents {
         for (ContentBlockParam content : messageParam.content().asBlockParams()) {
             content.text().ifPresent(textBlockParam -> System.out.println(textBlockParam.text()));
         }
+    }
+
+    private static void printAssistantTexts(List<MessageParam> history, int fromIndex) {
+        if (history == null || history.isEmpty()) {
+            return;
+        }
+        for (int i = Math.max(0, fromIndex); i < history.size(); i++) {
+            printAssistantText(history.get(i));
+        }
+    }
+
+    private static void startInputReader(LinkedBlockingQueue<String> inputQueue) {
+        Thread inputThread = new Thread(() -> {
+            Scanner scanner = new Scanner(System.in);
+            try {
+                while (scanner.hasNextLine()) {
+                    inputQueue.put(scanner.nextLine());
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                scanner.close();
+            }
+        });
+        inputThread.setName("lead-input-reader");
+        inputThread.setDaemon(true);
+        inputThread.start();
     }
 
     public static Tool buildBashTool() {
@@ -357,4 +405,3 @@ public class S11_autonomous_agents {
         return Tool.builder().inputSchema(inputSchemaBuild.build()).name("check_background").description("Check background task status. Omit task_id to list all.").build();
     }
 }
-

@@ -112,6 +112,18 @@ public class MessageBus {
         return teamMsgs;
     }
 
+    public boolean hasInboxMessages(String name) {
+        String inboxPath = this.msgDir + "/" + name + ".jsonl";
+        if (!Files.exists(Path.of(inboxPath)) || !Files.isRegularFile(Path.of(inboxPath))) {
+            return false;
+        }
+        try {
+            return Files.size(Path.of(inboxPath)) > 0;
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     public String broadcast(String sender, String content) {
         int count = 0;
         List<String> teammates = teammateManager.memberNames();

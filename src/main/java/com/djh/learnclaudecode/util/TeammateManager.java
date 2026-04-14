@@ -711,6 +711,21 @@ public class TeammateManager {
         return names;
     }
 
+    public boolean hasActiveMembers() {
+        if (this.teamConfig == null || this.teamConfig.members == null || this.teamConfig.members.isEmpty()) {
+            return false;
+        }
+        for (TeamMember member : this.teamConfig.members) {
+            if (member == null || member.getStatus() == null) {
+                continue;
+            }
+            if (!"shutdown".equalsIgnoreCase(member.getStatus())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static void printAssistantText(MessageParam messageParam) {
         String role = messageParam._role().asString().get();
         if (!role.equalsIgnoreCase(MessageParam.Role.Value.ASSISTANT.name())) {
